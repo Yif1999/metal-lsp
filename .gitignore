@@ -60,3 +60,11 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Swift Package Manager
+.swiftpm/
+.build/
+*.xcodeproj
+
+# macOS
+.DS_Store
