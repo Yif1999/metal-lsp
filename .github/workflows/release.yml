@@ -17,6 +17,26 @@ jobs:
     - name: Show Swift version
       run: swift --version
 
+    - name: Extract version from tag and verify
+      id: get_version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/v}
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Tag version: $VERSION"
+
+        # Verify Version.swift matches the tag
+        SWIFT_VERSION=$(grep 'public static let current = ' Sources/MetalCore/Version.swift | sed 's/.*"\(.*\)".*/\1/')
+        echo "Version.swift version: $SWIFT_VERSION"
+
+        if [ "$VERSION" != "$SWIFT_VERSION" ]; then
+          echo "ERROR: Tag version ($VERSION) does not match Version.swift ($SWIFT_VERSION)"
+          echo "Please run: ./scripts/bump-version.sh $VERSION"
+          echo "Then commit and recreate the tag"
+          exit 1
+        fi
+
+        echo "✓ Version verified: $VERSION"
+
     - name: Build release binary
       run: swift build -c release
 
