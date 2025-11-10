@@ -65,14 +65,13 @@ struct LSPIntegrationTests {
     }
 
     deinit {
-      // Terminate process first
+      // Terminate process and wait for it to fully exit
       if process.isRunning {
         process.terminate()
-        // Wait briefly for process to exit
-        Thread.sleep(forTimeInterval: 0.05)
+        process.waitUntilExit()
       }
 
-      // Then close pipes (process already dead, no SIGPIPE risk)
+      // Now safe to close pipes (process is fully terminated)
       try? inputPipe.fileHandleForWriting.close()
       try? outputPipe.fileHandleForReading.close()
       try? errorPipe.fileHandleForReading.close()
