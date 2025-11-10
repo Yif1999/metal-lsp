@@ -7,6 +7,8 @@
 
 A Language Server Protocol (LSP) implementation for Apple's Metal Shading Language, written in Swift.
 
+### Important: This is an implementation that was vibe coded, with a bit of touches here and there to make it work. It's just a tool to get some basic LSP functionality running in Neovim. I don't intend to support other use case. You can always fork and implement features or fixes you deem necesarry. 
+
 ## Features
 
 - **Real-time Diagnostics**: Validates Metal shaders using the official Metal compiler (`xcrun metal`)
