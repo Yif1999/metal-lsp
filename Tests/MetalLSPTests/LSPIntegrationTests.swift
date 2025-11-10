@@ -10,38 +10,76 @@ import Testing
 @Suite("LSP Integration Tests", .serialized)
 struct LSPIntegrationTests {
 
-  // MARK: - Helper Methods
+  // MARK: - Server Handle
 
-  func startServer() throws -> (
-    process: Process, inputPipe: Pipe, outputPipe: Pipe, errorPipe: Pipe
-  ) {
-    let inputPipe = Pipe()
-    let outputPipe = Pipe()
-    let errorPipe = Pipe()
-    let process = Process()
+  /// Handles server lifecycle with automatic cleanup via deinit
+  final class ServerHandle {
+    let process: Process
+    let inputPipe: Pipe
+    let outputPipe: Pipe
+    let errorPipe: Pipe
 
-    // Find the metal-lsp binary
-    let binaryPath: String
-    if FileManager.default.fileExists(atPath: ".build/release/metal-lsp") {
-      binaryPath = ".build/release/metal-lsp"
-    } else if FileManager.default.fileExists(atPath: ".build/debug/metal-lsp") {
-      binaryPath = ".build/debug/metal-lsp"
-    } else {
-      throw TestError.binaryNotFound
+    init() throws {
+      self.inputPipe = Pipe()
+      self.outputPipe = Pipe()
+      self.errorPipe = Pipe()
+      self.process = Process()
+
+      // Find the project root by looking for Package.swift
+      let fileManager = FileManager.default
+      var searchPath = fileManager.currentDirectoryPath
+      var packageRoot: String?
+
+      // Search up to 5 levels up for Package.swift
+      for _ in 0..<5 {
+        if fileManager.fileExists(atPath: searchPath + "/Package.swift") {
+          packageRoot = searchPath
+          break
+        }
+        searchPath = (searchPath as NSString).deletingLastPathComponent
+      }
+
+      guard let root = packageRoot else {
+        throw TestError.binaryNotFound
+      }
+
+      // Find the metal-lsp binary
+      let binaryPath: String
+      if fileManager.fileExists(atPath: "\(root)/.build/release/metal-lsp") {
+        binaryPath = "\(root)/.build/release/metal-lsp"
+      } else if fileManager.fileExists(atPath: "\(root)/.build/debug/metal-lsp") {
+        binaryPath = "\(root)/.build/debug/metal-lsp"
+      } else {
+        throw TestError.binaryNotFound
+      }
+
+      process.executableURL = URL(fileURLWithPath: binaryPath)
+      process.standardInput = inputPipe
+      process.standardOutput = outputPipe
+      process.standardError = errorPipe
+
+      try process.run()
+
+      // Give the server a moment to start
+      Thread.sleep(forTimeInterval: 0.1)
     }
 
-    process.executableURL = URL(fileURLWithPath: binaryPath)
-    process.standardInput = inputPipe
-    process.standardOutput = outputPipe
-    process.standardError = errorPipe
+    deinit {
+      // Terminate process first
+      if process.isRunning {
+        process.terminate()
+        // Wait briefly for process to exit
+        Thread.sleep(forTimeInterval: 0.05)
+      }
 
-    try process.run()
-
-    // Give the server a moment to start
-    Thread.sleep(forTimeInterval: 0.1)
-
-    return (process, inputPipe, outputPipe, errorPipe)
+      // Then close pipes (process already dead, no SIGPIPE risk)
+      try? inputPipe.fileHandleForWriting.close()
+      try? outputPipe.fileHandleForReading.close()
+      try? errorPipe.fileHandleForReading.close()
+    }
   }
+
+  // MARK: - Helper Methods
 
   func sendMessage(_ message: [String: Any], to inputPipe: Pipe) throws {
     let jsonData = try JSONSerialization.data(withJSONObject: message)
@@ -121,15 +159,7 @@ struct LSPIntegrationTests {
 
   @Test("Server initializes correctly")
   func serverInitialize() throws {
-    let (process, inputPipe, outputPipe, errorPipe) = try startServer()
-    defer {
-      try? inputPipe.fileHandleForWriting.close()
-      try? outputPipe.fileHandleForReading.close()
-      try? errorPipe.fileHandleForReading.close()
-      if process.isRunning {
-        process.terminate()
-      }
-    }
+    let server = try ServerHandle()
 
     // Send initialize request
     let initializeRequest: [String: Any] = [
@@ -143,10 +173,10 @@ struct LSPIntegrationTests {
       ],
     ]
 
-    try sendMessage(initializeRequest, to: inputPipe)
+    try sendMessage(initializeRequest, to: server.inputPipe)
 
     // Read response
-    guard let response = try readMessage(from: outputPipe) else {
+    guard let response = try readMessage(from: server.outputPipe) else {
       Issue.record("No response from server")
       return
     }
@@ -167,6 +197,7 @@ struct LSPIntegrationTests {
 
     #expect(capabilities["completionProvider"] != nil)
     #expect(capabilities["textDocumentSync"] != nil)
+    #expect(capabilities["hoverProvider"] as? Bool == true)
 
     // Send initialized notification
     let initializedNotification: [String: Any] = [
@@ -174,20 +205,12 @@ struct LSPIntegrationTests {
       "method": "initialized",
       "params": [:],
     ]
-    try sendMessage(initializedNotification, to: inputPipe)
+    try sendMessage(initializedNotification, to: server.inputPipe)
   }
 
   @Test("Completion provides Metal built-ins")
   func completion() throws {
-    let (process, inputPipe, outputPipe, errorPipe) = try startServer()
-    defer {
-      try? inputPipe.fileHandleForWriting.close()
-      try? outputPipe.fileHandleForReading.close()
-      try? errorPipe.fileHandleForReading.close()
-      if process.isRunning {
-        process.terminate()
-      }
-    }
+    let server = try ServerHandle()
 
     // Initialize
     try sendMessage(
@@ -200,15 +223,15 @@ struct LSPIntegrationTests {
           "rootUri": "file:///tmp/test",
           "capabilities": [:],
         ],
-      ], to: inputPipe)
-    _ = try readMessage(from: outputPipe)
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
 
     try sendMessage(
       [
         "jsonrpc": "2.0",
         "method": "initialized",
         "params": [:],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Open document
     try sendMessage(
@@ -224,7 +247,7 @@ struct LSPIntegrationTests {
               "#include <metal_stdlib>\nusing namespace metal;\n\nkernel void test() {\n    float\n}\n",
           ]
         ],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Request completion
     try sendMessage(
@@ -236,9 +259,9 @@ struct LSPIntegrationTests {
           "textDocument": ["uri": "file:///tmp/test.metal"],
           "position": ["line": 4, "character": 9],
         ],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
-    guard let response = try readResponse(withId: 2, from: outputPipe) else {
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
       Issue.record("No completion response")
       return
     }
@@ -255,15 +278,7 @@ struct LSPIntegrationTests {
 
   @Test("Diagnostics reports errors in Metal code")
   func diagnostics() throws {
-    let (process, inputPipe, outputPipe, errorPipe) = try startServer()
-    defer {
-      try? inputPipe.fileHandleForWriting.close()
-      try? outputPipe.fileHandleForReading.close()
-      try? errorPipe.fileHandleForReading.close()
-      if process.isRunning {
-        process.terminate()
-      }
-    }
+    let server = try ServerHandle()
 
     // Initialize
     try sendMessage(
@@ -276,15 +291,15 @@ struct LSPIntegrationTests {
           "rootUri": "file:///tmp/test",
           "capabilities": [:],
         ],
-      ], to: inputPipe)
-    _ = try readMessage(from: outputPipe)
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
 
     try sendMessage(
       [
         "jsonrpc": "2.0",
         "method": "initialized",
         "params": [:],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Create a temporary file with errors
     let tempDir = FileManager.default.temporaryDirectory
@@ -316,7 +331,7 @@ struct LSPIntegrationTests {
             "text": errorCode,
           ]
         ],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Save document (triggers validation)
     try sendMessage(
@@ -326,12 +341,12 @@ struct LSPIntegrationTests {
         "params": [
           "textDocument": ["uri": testFile.absoluteString]
         ],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Read diagnostic notification
     var foundDiagnostics = false
     for _ in 0..<5 {
-      if let message = try readMessage(from: outputPipe, timeout: 1.0),
+      if let message = try readMessage(from: server.outputPipe, timeout: 1.0),
         let method = message["method"] as? String,
         method == "textDocument/publishDiagnostics"
       {
@@ -360,15 +375,7 @@ struct LSPIntegrationTests {
 
   @Test("Diagnostics work with include files")
   func diagnosticsWithIncludes() throws {
-    let (process, inputPipe, outputPipe, errorPipe) = try startServer()
-    defer {
-      try? inputPipe.fileHandleForWriting.close()
-      try? outputPipe.fileHandleForReading.close()
-      try? errorPipe.fileHandleForReading.close()
-      if process.isRunning {
-        process.terminate()
-      }
-    }
+    let server = try ServerHandle()
 
     // Initialize
     try sendMessage(
@@ -381,15 +388,15 @@ struct LSPIntegrationTests {
           "rootUri": "file:///tmp/test",
           "capabilities": [:],
         ],
-      ], to: inputPipe)
-    _ = try readMessage(from: outputPipe)
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
 
     try sendMessage(
       [
         "jsonrpc": "2.0",
         "method": "initialized",
         "params": [:],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Create a temporary directory structure with header files
     let tempDir = FileManager.default.temporaryDirectory
@@ -442,7 +449,7 @@ struct LSPIntegrationTests {
             "text": metalContent,
           ]
         ],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Save document (triggers validation)
     try sendMessage(
@@ -452,14 +459,14 @@ struct LSPIntegrationTests {
         "params": [
           "textDocument": ["uri": metalFile.absoluteString]
         ],
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
     // Read diagnostic notification
     var foundDiagnostics = false
     var diagnosticsCount = -1
 
     for _ in 0..<5 {
-      if let message = try readMessage(from: outputPipe, timeout: 1.0),
+      if let message = try readMessage(from: server.outputPipe, timeout: 1.0),
         let method = message["method"] as? String,
         method == "textDocument/publishDiagnostics"
       {
@@ -483,17 +490,9 @@ struct LSPIntegrationTests {
     #expect(diagnosticsCount == 0, "Should have 0 errors when include paths work correctly")
   }
 
-  @Test("A server responds to shutdown request")
-  func aShutdown() throws {
-    let (process, inputPipe, outputPipe, errorPipe) = try startServer()
-    defer {
-      try? inputPipe.fileHandleForWriting.close()
-      try? outputPipe.fileHandleForReading.close()
-      try? errorPipe.fileHandleForReading.close()
-      if process.isRunning {
-        process.terminate()
-      }
-    }
+  @Test("Hover provides documentation for Metal built-ins")
+  func hover() throws {
+    let server = try ServerHandle()
 
     // Initialize
     try sendMessage(
@@ -506,8 +505,108 @@ struct LSPIntegrationTests {
           "rootUri": "file:///tmp/test",
           "capabilities": [:],
         ],
-      ], to: inputPipe)
-    _ = try readMessage(from: outputPipe)
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    // Open document with Metal code
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": "file:///tmp/test.metal",
+            "languageId": "metal",
+            "version": 1,
+            "text":
+              "#include <metal_stdlib>\nusing namespace metal;\n\nkernel void test() {\n    float4 color = normalize(float4(1.0));\n}\n",
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    // Request hover on "normalize" at line 4, character 19
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/hover",
+        "params": [
+          "textDocument": ["uri": "file:///tmp/test.metal"],
+          "position": ["line": 4, "character": 19],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No hover response")
+      return
+    }
+
+    #expect(response["id"] as? Int == 2)
+
+    // Check if there's an error
+    if let error = response["error"] as? [String: Any] {
+      Issue.record("Hover returned error: \(error)")
+      return
+    }
+
+    // Result can be null (no hover info) or a Hover object
+    guard response["result"] != nil else {
+      Issue.record("No result field in hover response")
+      return
+    }
+
+    // If result is NSNull, that means no hover info - this is valid but not what we want
+    if response["result"] is NSNull {
+      Issue.record("Hover returned null - word not found or document not loaded")
+      return
+    }
+
+    guard let result = response["result"] as? [String: Any] else {
+      Issue.record("Result is not a dictionary: \(type(of: response["result"]))")
+      return
+    }
+
+    guard let contents = result["contents"] as? [String: Any] else {
+      Issue.record("No contents in hover result")
+      return
+    }
+
+    #expect(contents["kind"] as? String == "markdown")
+
+    guard let value = contents["value"] as? String else {
+      Issue.record("No value in hover contents")
+      return
+    }
+
+    // Should contain the function signature and documentation
+    #expect(value.contains("normalize"))
+    #expect(value.contains("vector"))
+  }
+
+  @Test("A server responds to shutdown request")
+  func aShutdown() throws {
+    let server = try ServerHandle()
+
+    // Initialize
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": "file:///tmp/test",
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
 
     // Shutdown
     try sendMessage(
@@ -516,9 +615,9 @@ struct LSPIntegrationTests {
         "id": 2,
         "method": "shutdown",
         "params": NSNull(),
-      ], to: inputPipe)
+      ], to: server.inputPipe)
 
-    guard let response = try readResponse(withId: 2, from: outputPipe) else {
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
       Issue.record("No shutdown response")
       return
     }
@@ -532,7 +631,7 @@ struct LSPIntegrationTests {
         "jsonrpc": "2.0",
         "method": "exit",
         "params": NSNull(),
-      ], to: inputPipe)
+      ], to: server.inputPipe)
   }
 }
 

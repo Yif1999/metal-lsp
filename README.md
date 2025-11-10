@@ -17,6 +17,10 @@ A Language Server Protocol (LSP) implementation for Apple's Metal Shading Langua
   - Texture operations
   - Metal keywords and attributes
   - Function snippets (kernel, vertex, fragment templates)
+- **Hover Information**: Rich documentation for built-in Metal functions and types
+  - Function signatures with parameter types
+  - Detailed descriptions of what each function does
+  - Formatted in Markdown for easy reading
 - **Neovim Integration**: First-class support for Neovim's built-in LSP client
 
 ## Requirements
@@ -129,7 +133,7 @@ For basic syntax highlighting, add this to your Neovim configuration:
 vim.cmd([[
   syntax keyword metalKeyword kernel vertex fragment constant device threadgroup thread
   syntax keyword metalKeyword struct enum typedef if else for while do switch case default
-  syntax keyword metalKeyword break continue return const static inline using namespace
+  syntax keyword metalKeyword break continue return const constexpr static inline using namespace
   syntax keyword metalType bool char uchar short ushort int uint half float
   syntax keyword metalType bool2 bool3 bool4 int2 int3 int4 uint2 uint3 uint4
   syntax keyword metalType half2 half3 half4 float2 float3 float4
@@ -186,7 +190,25 @@ fragment float4 fragmentShader(float4 position [[position]]) {
 Open it in Neovim and you'll get:
 - Real-time error checking as you save
 - Auto-completion when you type (press `Ctrl-x Ctrl-o` or use your completion plugin)
+- Hover documentation (press `K` in normal mode over any built-in function or type)
 - Diagnostics in the sign column
+
+## Hover Information
+
+Hover over any Metal built-in function or type to see documentation:
+
+- Move your cursor over `normalize`, `float4`, `dot`, etc.
+- Press `K` in normal mode (or your configured hover key)
+- See formatted documentation with function signatures and descriptions
+
+The LSP includes comprehensive documentation for 136+ Metal built-in functions, types, and keywords compiled directly into the binary. Documentation is extracted from the official Metal Shading Language Specification and provides instant O(1) hash map lookups with zero I/O overhead.
+
+Example: Hovering over `normalize` shows:
+```
+float2 normalize(float2 x)
+---
+Returns a vector in the same direction as x but with a length of 1.
+```
 
 ## Completion Examples
 
@@ -212,6 +234,71 @@ swift test
 # Run the server directly
 .build/debug/metal-lsp --verbose
 ```
+
+### Updating Documentation
+
+The Metal documentation is compiled directly into the binary from Swift code generated from the Metal Shading Language Specification. To regenerate:
+
+```bash
+# Regenerate Swift code from spec
+make docs-gen
+```
+
+This reads `metal-shading-language.md` and generates `Sources/MetalCore/gen/MetalBuiltinData.swift` with ~136 builtin entries. The generated code is committed to the repository for zero-overhead documentation lookups.
+
+### Creating a Release
+
+**Quick Release (Automated):**
+
+```bash
+# Bump version, commit, and tag in one command
+./scripts/bump-version.sh 0.3.0 --commit
+
+# Push to trigger release
+git push && git push --tags
+```
+
+**Manual Release (Review First):**
+
+```bash
+# 1. Update version
+./scripts/bump-version.sh 0.3.0
+
+# 2. Review the change
+git diff Sources/MetalCore/Version.swift
+
+# 3. Commit and tag
+git add Sources/MetalCore/Version.swift
+git commit -m "Bump version to 0.3.0"
+git tag v0.3.0
+
+# 4. Push
+git push && git push --tags
+```
+
+The GitHub Actions CI will automatically:
+1. Verify that `Version.swift` matches the tag (fails if mismatch)
+2. Build the release binary
+3. Create a GitHub release with the binary and installation instructions
+
+**Important:** The version in `Version.swift` must match the git tag. The CI enforces this to prevent version mismatches.
+
+**Obtaining the Metal Shading Language Specification:**
+
+1. Download the official PDF from [Apple's Metal documentation](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf)
+
+2. Convert to markdown using marker-pdf:
+
+   ```bash
+   # Install marker-pdf
+   pip3 install marker-pdf
+
+   # Convert PDF to Markdown (outputs to Metal-Shading-Language-Specification/ directory)
+   marker_single Metal-Shading-Language-Specification.pdf --output_format markdown
+
+   # Move/rename the output
+   mv Metal-Shading-Language-Specification/Metal-Shading-Language-Specification.md metal-shading-language.md
+   ```
 
 ### Debugging
 
@@ -251,11 +338,11 @@ tail -f /tmp/metal-lsp.log
 
 Future enhancements:
 
-- [ ] Hover information for built-in functions
-- [ ] Go to definition (requires parsing)
-- [ ] Find references
+- [x] Hover information for built-in functions
 - [ ] Signature help for functions
 - [ ] Document symbols
+- [ ] Go to definition (requires parsing)
+- [ ] Find references
 - [ ] Code formatting
 - [ ] Incremental compilation for better performance
 - [ ] Context-aware completion (filter by scope)

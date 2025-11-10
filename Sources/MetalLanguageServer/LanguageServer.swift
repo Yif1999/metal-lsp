@@ -7,6 +7,7 @@ public class LanguageServer {
   private let documentManager = DocumentManager()
   private let metalCompiler = MetalCompiler()
   private let verbose: Bool
+  private var documentation: MetalDocumentation?
 
   private var isInitialized = false
   private var isShuttingDown = false
@@ -14,6 +15,10 @@ public class LanguageServer {
   public init(verbose: Bool = false, logMessages: Bool = false) {
     self.verbose = verbose
     self.transport = MessageTransport(logMessages: logMessages)
+
+    // Load builtin documentation (compiled into binary)
+    self.documentation = MetalDocumentation()
+    log("Loaded Metal builtin documentation")
   }
 
   public func run() throws {
@@ -81,6 +86,17 @@ public class LanguageServer {
         let result = try handleCompletion(params: params)
         try sendResponse(id: request.id, result: result)
 
+      case "textDocument/hover":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(HoverParams.self)
+        let result = try handleHover(params: params)
+        try sendResponse(id: request.id, result: result)
+
       default:
         try sendError(
           id: request.id, code: .methodNotFound,
@@ -145,7 +161,7 @@ public class LanguageServer {
       capabilities: capabilities,
       serverInfo: InitializeResult.ServerInfo(
         name: "metal-lsp",
-        version: "0.1.0"
+        version: Version.current
       )
     )
 
@@ -218,11 +234,16 @@ public class LanguageServer {
 
     log("Completion requested at \(params.position.line):\(params.position.character)")
 
-    // Get all built-in completions
-    let builtins = MetalBuiltins.getAllCompletions()
+    // Combine hardcoded completions (keywords, attributes, snippets) with JSON completions
+    var allCompletions = MetalBuiltins.getHardcodedCompletions()
+
+    // Add completions from JSON documentation
+    if let documentation = documentation {
+      allCompletions += documentation.getAllCompletions()
+    }
 
     // Convert to LSP completion items
-    let items = builtins.map { builtin -> CompletionItem in
+    let items = allCompletions.map { builtin -> CompletionItem in
       let kind: CompletionItemKind
       if builtin.label.starts(with: "[[") {
         kind = .property
@@ -251,6 +272,106 @@ public class LanguageServer {
 
     let result = CompletionList(isIncomplete: false, items: items)
     return try JSONValue.from(result)
+  }
+
+  private func handleHover(params: HoverParams?) throws -> JSONValue {
+    guard let params = params else {
+      return JSONValue.null
+    }
+
+    log("Hover requested at \(params.position.line):\(params.position.character)")
+
+    // Get document text
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      log("Document not found: \(params.textDocument.uri)")
+      return JSONValue.null
+    }
+
+    // Extract word at position
+    guard let word = extractWordAtPosition(text: document.text, position: params.position) else {
+      log("No word found at position")
+      return JSONValue.null
+    }
+
+    log("Hovering over word: \(word)")
+
+    // Try to find documentation from the JSON documentation first
+    if let documentation = documentation,
+       let entry = documentation.lookup(word) {
+      log("Found JSON documentation for: \(word)")
+
+      let hover = Hover(
+        contents: MarkupContent(kind: .markdown, value: entry.markdownDocumentation)
+      )
+
+      return try JSONValue.from(hover)
+    }
+
+    // Fallback to hardcoded completions (keywords, attributes, etc.)
+    let builtins = MetalBuiltins.getHardcodedCompletions()
+    guard let builtin = builtins.first(where: { $0.label == word }) else {
+      log("No documentation found for word: \(word)")
+      return JSONValue.null
+    }
+
+    // Format hover content from builtins
+    var markdown = ""
+
+    if let detail = builtin.detail {
+      markdown += "```metal\n\(detail)\n```\n"
+    } else {
+      markdown += "```metal\n\(builtin.label)\n```\n"
+    }
+
+    if let documentation = builtin.documentation {
+      markdown += "\n---\n\n\(documentation)"
+    }
+
+    let hover = Hover(
+      contents: MarkupContent(kind: .markdown, value: markdown)
+    )
+
+    return try JSONValue.from(hover)
+  }
+
+  // MARK: - Helper Methods
+
+  private func extractWordAtPosition(text: String, position: Position) -> String? {
+    let lines = text.components(separatedBy: .newlines)
+    guard position.line < lines.count else { return nil }
+
+    let line = lines[position.line]
+    let characters = Array(line)
+    guard position.character < characters.count else { return nil }
+
+    // Find word boundaries
+    let wordCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+
+    var start = position.character
+    var end = position.character
+
+    // Expand backward
+    while start > 0 {
+      let char = characters[start - 1]
+      if String(char).rangeOfCharacter(from: wordCharacters) == nil {
+        break
+      }
+      start -= 1
+    }
+
+    // Expand forward
+    while end < characters.count {
+      let char = characters[end]
+      if String(char).rangeOfCharacter(from: wordCharacters) == nil {
+        break
+      }
+      end += 1
+    }
+
+    guard start < end else { return nil }
+
+    let wordChars = characters[start..<end]
+    return String(wordChars)
   }
 
   // MARK: - Diagnostics

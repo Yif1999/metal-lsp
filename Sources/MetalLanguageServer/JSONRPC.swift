@@ -2,10 +2,6 @@ import Foundation
 
 // MARK: - JSON-RPC Message Types
 
-/// JSON-RPC message wrapper
-struct JSONRPCMessage: Codable {
-  let jsonrpc: String = "2.0"
-}
 
 /// JSON-RPC Request
 struct JSONRPCRequest: Codable {

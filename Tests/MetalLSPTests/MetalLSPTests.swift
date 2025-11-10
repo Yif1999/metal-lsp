@@ -7,17 +7,17 @@ import Testing
 @Suite("Metal LSP Unit Tests")
 struct MetalLSPTests {
 
-  @Test("Metal built-ins are not empty")
+  @Test("Metal hardcoded completions are not empty")
   func metalBuiltinsNotEmpty() {
-    let completions = MetalBuiltins.getAllCompletions()
-    #expect(!completions.isEmpty, "Built-ins should not be empty")
+    let completions = MetalBuiltins.getHardcodedCompletions()
+    #expect(!completions.isEmpty, "Hardcoded completions should not be empty")
   }
 
-  @Test("Metal built-ins contain float4")
-  func metalBuiltinsContainsFloat4() {
-    let completions = MetalBuiltins.getAllCompletions()
-    let hasFloat4 = completions.contains { $0.label == "float4" }
-    #expect(hasFloat4, "Built-ins should contain float4 type")
+  @Test("Metal documentation contains float4")
+  func metalDocsContainsFloat4() {
+    let docs = MetalDocumentation()
+    let entry = docs.lookup("float4")
+    #expect(entry != nil, "Documentation should contain float4 type")
   }
 
   @Test("Metal built-ins contain kernel keywords")

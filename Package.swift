@@ -13,6 +13,10 @@ let package = Package(
             name: "metal-lsp",
             targets: ["MetalLSP"]
         ),
+        .executable(
+            name: "metal-doc-generator",
+            targets: ["MetalDocGenerator"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
@@ -37,6 +41,12 @@ let package = Package(
         .target(
             name: "MetalCore",
             dependencies: []
+        ),
+
+        // Documentation generator tool
+        .executableTarget(
+            name: "MetalDocGenerator",
+            dependencies: ["MetalCore"]
         ),
 
         // Tests

@@ -68,3 +68,8 @@ fastlane/test_output
 
 # macOS
 .DS_Store
+
+# Metal Shading Language Specification (large source files)
+# Keep the generated code but not the source markdown/PDF
+metal-shading-language.md
+Metal-Shading-Language-Specification.pdf

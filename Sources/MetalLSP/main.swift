@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MetalCore
 import MetalLanguageServer
 
 @main
@@ -7,7 +8,7 @@ struct MetalLSPCommand: ParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "metal-lsp",
     abstract: "Metal Shading Language Server Protocol implementation",
-    version: "0.1.0"
+    version: Version.current
   )
 
   @Flag(name: .long, help: "Enable verbose logging to stderr")

@@ -161,6 +161,35 @@ struct CompletionContext: Codable {
   let triggerCharacter: String?
 }
 
+// MARK: - Hover Types
+
+enum MarkupKind: String, Codable {
+  case plaintext
+  case markdown
+}
+
+struct MarkupContent: Codable {
+  let kind: MarkupKind
+  let value: String
+
+  init(kind: MarkupKind = .markdown, value: String) {
+    self.kind = kind
+    self.value = value
+  }
+}
+
+struct Hover: Codable {
+  let contents: MarkupContent
+  let range: Range?
+
+  init(contents: MarkupContent, range: Range? = nil) {
+    self.contents = contents
+    self.range = range
+  }
+}
+
+typealias HoverParams = TextDocumentPositionParams
+
 // MARK: - Initialize Types
 
 struct InitializeParams: Codable {
@@ -202,13 +231,16 @@ struct WorkspaceFolder: Codable {
 struct ServerCapabilities: Codable {
   let textDocumentSync: TextDocumentSyncOptions?
   let completionProvider: CompletionOptions?
+  let hoverProvider: Bool?
 
   init(
     textDocumentSync: TextDocumentSyncOptions,
-    completionProvider: CompletionOptions
+    completionProvider: CompletionOptions,
+    hoverProvider: Bool = true
   ) {
     self.textDocumentSync = textDocumentSync
     self.completionProvider = completionProvider
+    self.hoverProvider = hoverProvider
   }
 }
 
