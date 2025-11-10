@@ -89,23 +89,6 @@ lspconfig.metal_lsp.setup({
 })
 ```
 
-### Manual Setup (without nvim-lspconfig)
-
-```lua
--- ~/.config/nvim/init.lua
-
-vim.api.nvim_create_autocmd('FileType', {
-  pattern = 'metal',
-  callback = function()
-    vim.lsp.start({
-      name = 'metal-lsp',
-      cmd = { '/path/to/metal-lsp' },  -- Update this path
-      root_dir = vim.fs.dirname(vim.fs.find({ '.git', 'Package.swift' }, { upward = true })[1]),
-    })
-  end,
-})
-```
-
 ### File Type Detection
 
 Add Metal file type detection to your Neovim configuration:
@@ -119,37 +102,6 @@ vim.filetype.add({
 })
 ```
 
-Or using the older method:
-
-```vim
-" ~/.config/nvim/ftdetect/metal.vim
-autocmd BufRead,BufNewFile *.metal setfiletype metal
-```
-
-### Optional: Syntax Highlighting
-
-For basic syntax highlighting, add this to your Neovim configuration:
-
-```lua
--- ~/.config/nvim/after/syntax/metal.lua
-vim.cmd([[
-  syntax keyword metalKeyword kernel vertex fragment constant device threadgroup thread
-  syntax keyword metalKeyword struct enum typedef if else for while do switch case default
-  syntax keyword metalKeyword break continue return const constexpr static inline using namespace
-  syntax keyword metalType bool char uchar short ushort int uint half float
-  syntax keyword metalType bool2 bool3 bool4 int2 int3 int4 uint2 uint3 uint4
-  syntax keyword metalType half2 half3 half4 float2 float3 float4
-  syntax keyword metalType float2x2 float3x3 float4x4 half2x2 half3x3 half4x4
-  syntax keyword metalType texture1d texture2d texture3d texturecube sampler
-  syntax keyword metalFunction sin cos tan asin acos atan atan2 pow exp log sqrt
-  syntax keyword metalFunction dot cross length distance normalize reflect refract
-  syntax keyword metalFunction min max clamp mix step smoothstep abs ceil floor
-
-  highlight link metalKeyword Keyword
-  highlight link metalType Type
-  highlight link metalFunction Function
-]])
-```
 
 ## Usage
 
@@ -358,3 +310,4 @@ Apache License 2.0 - See LICENSE file for details
 - Built with Swift and the Language Server Protocol
 - Uses Apple's Metal compiler for validation
 - Inspired by the LSP ecosystem and Neovim's built-in LSP support
+- You can use this as you wish, modify it ...
