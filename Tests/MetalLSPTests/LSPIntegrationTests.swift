@@ -624,13 +624,8 @@ struct LSPIntegrationTests {
     #expect(response["id"] as? Int == 2)
     #expect(response["result"] != nil)
 
-    // Send exit notification (don't wait for actual exit, defer will clean up)
-    try sendMessage(
-      [
-        "jsonrpc": "2.0",
-        "method": "exit",
-        "params": NSNull(),
-      ], to: server.inputPipe)
+    // Don't send exit notification - let ServerHandle.deinit terminate the process
+    // cleanly to avoid race condition where server exits before we finish writing
   }
 }
 
