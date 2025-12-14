@@ -7,7 +7,7 @@
 
 A Language Server Protocol (LSP) implementation for Apple's Metal Shading Language, written in Swift.
 
-### Important: This is an implementation that was vibe coded, with a bit of touches here and there to make it work. It's just a tool to get some basic LSP functionality running in Neovim. I don't intend to support other use case. You can always fork and implement features or fixes you deem necesarry. 
+### Important: This is an implementation that was vibe coded, with a bit of touches here and there to make it work. It's just a tool to get some basic LSP functionality for Metal Shading Language. You can always fork and implement features or fixes you deem necessary.
 
 ## Features
 
@@ -23,7 +23,7 @@ A Language Server Protocol (LSP) implementation for Apple's Metal Shading Langua
   - Function signatures with parameter types
   - Detailed descriptions of what each function does
   - Formatted in Markdown for easy reading
-- **Neovim Integration**: First-class support for Neovim's built-in LSP client
+- **IDE Integration**: Compatible with any LSP-compliant editor including VS Code, Vim, Neovim, and others
 
 ## Requirements
 
@@ -48,60 +48,27 @@ swift build -c release
 cp .build/release/metal-lsp /usr/local/bin/
 ```
 
-## Neovim Setup
+## Editor Setup
 
-### Using nvim-lspconfig
+### LSP Configuration
 
-If you use [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig), add this to your Neovim configuration:
+Most modern editors with LSP support can use this server. The server expects:
 
-```lua
--- ~/.config/nvim/init.lua or ~/.config/nvim/lua/lsp-config.lua
-
-local lspconfig = require('lspconfig')
-local configs = require('lspconfig.configs')
-
--- Define metal-lsp configuration if it doesn't exist
-if not configs.metal_lsp then
-  configs.metal_lsp = {
-    default_config = {
-      cmd = { '/path/to/metal-lsp' },  -- Update this path
-      filetypes = { 'metal' },
-      root_dir = lspconfig.util.root_pattern('.git', 'Package.swift'),
-      settings = {},
-    },
-  }
-end
-
--- Set up the server
-lspconfig.metal_lsp.setup({
-  on_attach = function(client, bufnr)
-    -- Enable completion triggered by <c-x><c-o>
-    vim.api.nvim_buf_set_option(bufnr, 'omnifunc', 'v:lua.vim.lsp.omnifunc')
-
-    -- Key mappings
-    local bufopts = { noremap=true, silent=true, buffer=bufnr }
-    vim.keymap.set('n', 'gd', vim.lsp.buf.definition, bufopts)
-    vim.keymap.set('n', 'K', vim.lsp.buf.hover, bufopts)
-    vim.keymap.set('n', '<leader>rn', vim.lsp.buf.rename, bufopts)
-    vim.keymap.set('n', '<leader>ca', vim.lsp.buf.code_action, bufopts)
-    vim.keymap.set('n', 'gr', vim.lsp.buf.references, bufopts)
-  end,
-})
-```
+- **Command**: `/path/to/metal-lsp` (update with your actual path)
+- **File Type**: `metal`
+- **Root Pattern**: `.git` or `Package.swift`
 
 ### File Type Detection
 
-Add Metal file type detection to your Neovim configuration:
+Ensure your editor recognizes `.metal` files as Metal Shading Language:
 
-```lua
--- ~/.config/nvim/filetype.lua or add to init.lua
-vim.filetype.add({
-  extension = {
-    metal = 'metal',
-  },
-})
+- VS Code: Install a Metal language support extension
+- Vim/Neovim: Add to your filetype configuration:
+
+```vim
+" Add to your vimrc
+autocmd BufNewFile,BufRead *.metal set filetype=metal
 ```
-
 
 ## Usage
 
@@ -141,18 +108,18 @@ fragment float4 fragmentShader(float4 position [[position]]) {
 }
 ```
 
-Open it in Neovim and you'll get:
+Open it in your LSP-enabled editor and you'll get:
 - Real-time error checking as you save
-- Auto-completion when you type (press `Ctrl-x Ctrl-o` or use your completion plugin)
-- Hover documentation (press `K` in normal mode over any built-in function or type)
-- Diagnostics in the sign column
+- Auto-completion when you type
+- Hover documentation (use your editor's hover key combination)
+- Diagnostics display in your editor's diagnostics panel
 
 ## Hover Information
 
 Hover over any Metal built-in function or type to see documentation:
 
 - Move your cursor over `normalize`, `float4`, `dot`, etc.
-- Press `K` in normal mode (or your configured hover key)
+- Use your editor's hover key combination (often Ctrl+K or F2 depending on your editor)
 - See formatted documentation with function signatures and descriptions
 
 The LSP includes comprehensive documentation for 136+ Metal built-in functions, types, and keywords compiled directly into the binary. Documentation is extracted from the official Metal Shading Language Specification and provides instant O(1) hash map lookups with zero I/O overhead.
@@ -166,7 +133,7 @@ Returns a vector in the same direction as x but with a length of 1.
 
 ## Completion Examples
 
-Type these prefixes and trigger completion:
+Type these prefixes and trigger your editor's completion (usually Ctrl+Space or equivalent):
 
 - `float` → suggests `float`, `float2`, `float3`, `float4`, `float2x2`, etc.
 - `kernel` → suggests kernel function template snippet
@@ -272,7 +239,7 @@ tail -f /tmp/metal-lsp.log
 
 ### LSP not starting
 
-1. Verify the binary path in your Neovim config is correct
+1. Verify the binary path in your editor's LSP configuration is correct
 2. Check that the binary is executable: `chmod +x /path/to/metal-lsp`
 3. Run the binary manually to check for errors: `metal-lsp --verbose`
 
@@ -280,13 +247,13 @@ tail -f /tmp/metal-lsp.log
 
 1. Ensure you've saved the file (diagnostics run on save)
 2. Check that `xcrun metal` works: `xcrun metal --version`
-3. Look at the LSP logs: `:lua vim.lsp.set_log_level('debug')` then check `:LspLog`
+3. Check your editor's LSP logs/output for error messages
 
 ### Completions not working
 
-1. Verify the LSP is attached: `:LspInfo`
-2. Try manual completion: `Ctrl-x Ctrl-o`
-3. Check your completion plugin configuration
+1. Verify the LSP server is attached to your buffer
+2. Try manual completion (usually Ctrl+Space or your editor's completion shortcut)
+3. Check your editor's completion settings and LSP configuration
 
 ## Roadmap
 
@@ -309,5 +276,5 @@ Apache License 2.0 - See LICENSE file for details
 
 - Built with Swift and the Language Server Protocol
 - Uses Apple's Metal compiler for validation
-- Inspired by the LSP ecosystem and Neovim's built-in LSP support
+- Inspired by the LSP ecosystem and modern editor LSP support
 - You can use this as you wish, modify it ...
