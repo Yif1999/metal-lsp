@@ -260,11 +260,11 @@ tail -f /tmp/metal-lsp.log
 Future enhancements:
 
 - [x] Hover information for built-in functions
+- [x] Go to definition (variable/function declarations)
+- [x] Find references (symbol usage search)
+- [x] Code formatting (via clang-format)
 - [ ] Signature help for functions
 - [ ] Document symbols
-- [ ] Go to definition (requires parsing)
-- [ ] Find references
-- [ ] Code formatting
 - [ ] Incremental compilation for better performance
 - [ ] Context-aware completion (filter by scope)
 

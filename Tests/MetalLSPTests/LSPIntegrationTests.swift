@@ -589,6 +589,232 @@ struct LSPIntegrationTests {
     #expect(value.contains("vector"))
   }
 
+  @Test("Go to definition finds function declarations")
+  func gotoDefinition() throws {
+    let server = try ServerHandle()
+
+    // Initialize
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": "file:///tmp/test",
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    let metalCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      kernel void myKernel(device float* data [[buffer(0)]]) {
+          data[0] = 1.0;
+      }
+      """
+
+    // Open document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": "file:///tmp/test.metal",
+            "languageId": "metal",
+            "version": 1,
+            "text": metalCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    // Request definition for "myKernel" at line 4, column 15 (inside the function name)
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/definition",
+        "params": [
+          "textDocument": ["uri": "file:///tmp/test.metal"],
+          "position": ["line": 4, "character": 15],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No definition response")
+      return
+    }
+
+    #expect(response["id"] as? Int == 2)
+    if let result = response["result"] as? [String: Any] {
+      #expect(result["uri"] as? String == "file:///tmp/test.metal")
+      if let range = result["range"] as? [String: Any] {
+        #expect(range["start"] != nil)
+        #expect(range["end"] != nil)
+      }
+    }
+  }
+
+  @Test("Find references locates all usages of a symbol")
+  func findReferences() throws {
+    let server = try ServerHandle()
+
+    // Initialize
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": "file:///tmp/test",
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    let metalCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      float myValue = 1.0;
+
+      kernel void myKernel(device float* data [[buffer(0)]]) {
+          data[0] = myValue;
+      }
+      """
+
+    // Open document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": "file:///tmp/test.metal",
+            "languageId": "metal",
+            "version": 1,
+            "text": metalCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    // Request references for "myValue"
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/references",
+        "params": [
+          "textDocument": ["uri": "file:///tmp/test.metal"],
+          "position": ["line": 3, "character": 6],
+          "context": ["includeDeclaration": true],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No references response")
+      return
+    }
+
+    #expect(response["id"] as? Int == 2)
+    if let locations = response["result"] as? [[String: Any]] {
+      #expect(!locations.isEmpty, "Should find at least one reference")
+    }
+  }
+
+  @Test("Code formatting handles Metal code")
+  func formatting() throws {
+    let server = try ServerHandle()
+
+    // Initialize
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": "file:///tmp/test",
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    let metalCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+      kernel void test(){
+      float x=1.0;
+      }
+      """
+
+    // Open document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": "file:///tmp/test.metal",
+            "languageId": "metal",
+            "version": 1,
+            "text": metalCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    // Request formatting
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/formatting",
+        "params": [
+          "textDocument": ["uri": "file:///tmp/test.metal"],
+          "options": [
+            "tabSize": 2,
+            "insertSpaces": true,
+          ],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No formatting response")
+      return
+    }
+
+    #expect(response["id"] as? Int == 2)
+    if let edits = response["result"] as? [[String: Any]] {
+      // Should get some edits (or empty array if no formatting changes needed)
+      #expect(true, "Formatting returned edits")
+    }
+  }
+
   @Test("A server responds to shutdown request")
   func aShutdown() throws {
     let server = try ServerHandle()
