@@ -270,10 +270,10 @@ Future enhancements:
 - [x] Go to definition (variable/function declarations)
 - [x] Find references (symbol usage search)
 - [x] Code formatting (via clang-format)
-- [ ] Signature help for functions
-- [ ] Document symbols
-- [ ] Incremental compilation for better performance
-- [ ] Context-aware completion (filter by scope)
+- [x] Signature help for functions
+- [x] Document symbols
+- [x] Incremental compilation for better performance
+- [x] Context-aware completion (filter by scope)
 
 ## License
 

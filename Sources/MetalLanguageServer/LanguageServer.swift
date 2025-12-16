@@ -9,8 +9,25 @@ public class LanguageServer {
   private let symbolFinder = MetalSymbolFinder()
   private let formatter = MetalFormatter()
   private let lexer = MetalLexer()
+  private let documentIndexer = MetalDocumentIndexer()
   private let verbose: Bool
   private var documentation: MetalDocumentation?
+
+  private struct CachedDocumentAnalysis {
+    let version: Int
+    let textHash: UInt64
+    let index: MetalDocumentIndex
+    let tokens: [MetalToken]
+  }
+
+  private struct CachedDiagnostics {
+    let cacheKey: UInt64
+    let diagnosticsByURI: [String: [Diagnostic]]
+  }
+
+  private var analysisCache: [String: CachedDocumentAnalysis] = [:]
+  private var diagnosticsCache: [String: CachedDiagnostics] = [:]
+  private var builtinCompletionItems: [CompletionItem]?
 
   private let tokenTypes = [
     "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter", "variable", "property", "enumMember", "event", "function", "method", "macro", "keyword", "modifier", "comment", "string", "number", "regexp", "operator"
@@ -149,6 +166,28 @@ public class LanguageServer {
         let result = try handleSemanticTokens(params: params)
         try sendResponse(id: request.id, result: result)
 
+      case "textDocument/signatureHelp":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(SignatureHelpParams.self)
+        let result = try handleSignatureHelp(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/documentSymbol":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(DocumentSymbolParams.self)
+        let result = try handleDocumentSymbols(params: params)
+        try sendResponse(id: request.id, result: result)
+
       default:
         try sendError(
           id: request.id, code: .methodNotFound,
@@ -202,14 +241,15 @@ public class LanguageServer {
     let capabilities = ServerCapabilities(
       textDocumentSync: TextDocumentSyncOptions(
         openClose: true,
-        change: 1  // Full document sync
+        change: 2
       ),
       completionProvider: CompletionOptions(
-        triggerCharacters: [".", "[", "(", " "]
+        triggerCharacters: [".", "[", "(", " ", ","]
       ),
+      signatureHelpProvider: SignatureHelpOptions(triggerCharacters: ["(", ","]),
       semanticTokensProvider: SemanticTokensOptions(
-          legend: SemanticTokensLegend(tokenTypes: tokenTypes, tokenModifiers: tokenModifiers),
-          full: true
+        legend: SemanticTokensLegend(tokenTypes: tokenTypes, tokenModifiers: tokenModifiers),
+        full: true
       )
     )
 
@@ -264,6 +304,8 @@ public class LanguageServer {
       changes: params.contentChanges,
       version: params.textDocument.version
     )
+
+    analysisCache.removeValue(forKey: params.textDocument.uri)
   }
 
   private func handleDidSave(params: DidSaveTextDocumentParams?) throws {
@@ -280,6 +322,8 @@ public class LanguageServer {
 
     log("Document closed: \(params.textDocument.uri)")
 
+    analysisCache.removeValue(forKey: params.textDocument.uri)
+    diagnosticsCache.removeValue(forKey: params.textDocument.uri)
     documentManager.closeDocument(uri: params.textDocument.uri)
   }
 
@@ -290,43 +334,45 @@ public class LanguageServer {
 
     log("Completion requested at \(params.position.line):\(params.position.character)")
 
-    // Combine hardcoded completions (keywords, attributes, snippets) with JSON completions
-    var allCompletions = MetalBuiltins.getHardcodedCompletions()
+    let document = documentManager.getDocument(uri: params.textDocument.uri)
 
-    // Add completions from JSON documentation
-    if let documentation = documentation {
-      allCompletions += documentation.getAllCompletions()
+    let filterContext: CompletionFilterContext
+    if let document {
+      filterContext = completionFilterContext(in: document, at: params.position)
+    } else {
+      filterContext = CompletionFilterContext(prefix: nil, restrictToAttributes: false)
     }
 
-    // Convert to LSP completion items
-    let items = allCompletions.map { builtin -> CompletionItem in
-      let kind: CompletionItemKind
-      if builtin.label.starts(with: "[[") {
-        kind = .property
-      } else if builtin.insertText?.contains("$") == true {
-        kind = .snippet
-      } else if builtin.detail?.contains("(") == true {
-        kind = .function
-      } else if MetalBuiltins.keywords.contains(builtin.label) {
-        kind = .keyword
-      } else {
-        kind = .class  // Types
+    var items: [CompletionItem] = []
+
+    if let document, let analysis = getAnalysis(for: params.textDocument.uri, document: document) {
+      items += completionItems(from: analysis.index)
+    }
+
+    items += getBuiltinCompletionItems()
+
+    if filterContext.restrictToAttributes {
+      items = items.filter { $0.label.hasPrefix("[[") }
+    }
+
+    if let prefix = filterContext.prefix, !prefix.isEmpty {
+      let lowered = prefix.lowercased()
+      items = items.filter { $0.label.lowercased().hasPrefix(lowered) }
+    }
+
+    var deduped: [CompletionItem] = []
+    deduped.reserveCapacity(items.count)
+    var seen = Set<String>()
+
+    for item in items {
+      if seen.contains(item.label) {
+        continue
       }
-
-      let insertTextFormat: InsertTextFormat? =
-        builtin.insertText?.contains("$") == true ? .snippet : nil
-
-      return CompletionItem(
-        label: builtin.label,
-        kind: kind,
-        detail: builtin.detail,
-        documentation: builtin.documentation,
-        insertText: builtin.insertText,
-        insertTextFormat: insertTextFormat
-      )
+      seen.insert(item.label)
+      deduped.append(item)
     }
 
-    let result = CompletionList(isIncomplete: false, items: items)
+    let result = CompletionList(isIncomplete: false, items: deduped)
     return try JSONValue.from(result)
   }
 
@@ -546,6 +592,80 @@ public class LanguageServer {
     return try JSONValue.from(SemanticTokens(data: encodedData))
   }
 
+  private func handleSignatureHelp(params: SignatureHelpParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(SignatureHelp(signatures: [], activeSignature: nil, activeParameter: nil))
+    }
+
+    log("Signature help requested at \(params.position.line):\(params.position.character)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(SignatureHelp(signatures: [], activeSignature: nil, activeParameter: nil))
+    }
+
+    guard let analysis = getAnalysis(for: params.textDocument.uri, document: document) else {
+      return try JSONValue.from(SignatureHelp(signatures: [], activeSignature: nil, activeParameter: nil))
+    }
+
+    if isPositionInNonCodeToken(position: params.position, tokens: analysis.tokens) {
+      return try JSONValue.from(SignatureHelp(signatures: [], activeSignature: nil, activeParameter: nil))
+    }
+
+    guard let call = extractCallContext(in: document, at: params.position) else {
+      return try JSONValue.from(SignatureHelp(signatures: [], activeSignature: nil, activeParameter: nil))
+    }
+
+    let functionName = call.functionName
+
+    let signature: MetalFunctionSignature?
+    if let documentation = documentation, let entry = documentation.lookup(functionName) {
+      signature = MetalFunctionSignature(
+        name: entry.symbol,
+        label: entry.signature,
+        parameters: parseParameters(fromSignatureLabel: entry.signature)
+      )
+    } else {
+      signature = analysis.index.functionSignatures[functionName]
+    }
+
+    guard let signature else {
+      return try JSONValue.from(SignatureHelp(signatures: [], activeSignature: nil, activeParameter: nil))
+    }
+
+    let signatureInformation = SignatureInformation(
+      label: signature.label,
+      documentation: nil,
+      parameters: signature.parameters.map { ParameterInformation(label: $0) }
+    )
+
+    let help = SignatureHelp(
+      signatures: [signatureInformation],
+      activeSignature: 0,
+      activeParameter: call.activeParameter
+    )
+
+    return try JSONValue.from(help)
+  }
+
+  private func handleDocumentSymbols(params: DocumentSymbolParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(DocumentSymbolResult())
+    }
+
+    log("Document symbols requested for \(params.textDocument.uri)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(DocumentSymbolResult())
+    }
+
+    guard let analysis = getAnalysis(for: params.textDocument.uri, document: document) else {
+      return try JSONValue.from(DocumentSymbolResult())
+    }
+
+    let symbols = analysis.index.symbols.map { documentSymbol(from: $0) }
+    return try JSONValue.from(symbols)
+  }
+
   private func encodeTokens(_ tokens: [MetalToken]) -> [Int] {
     var data: [Int] = []
     var prevLine = 0
@@ -622,7 +742,363 @@ public class LanguageServer {
     return String(wordChars)
   }
 
+  private struct CompletionFilterContext {
+    let prefix: String?
+    let restrictToAttributes: Bool
+  }
+
+  private struct CallContext {
+    let functionName: String
+    let activeParameter: Int
+  }
+
+  private func stableHash(_ text: String) -> UInt64 {
+    var hash: UInt64 = 14695981039346656037
+    for byte in text.utf8 {
+      hash ^= UInt64(byte)
+      hash &*= 1099511628211
+    }
+    return hash
+  }
+
+  private func getAnalysis(for uri: String, document: Document) -> CachedDocumentAnalysis? {
+    let textHash = stableHash(document.text)
+    if let cached = analysisCache[uri], cached.version == document.version, cached.textHash == textHash {
+      return cached
+    }
+
+    let index = documentIndexer.index(source: document.text)
+    let tokens = lexer.tokenize(document.text)
+
+    let analysis = CachedDocumentAnalysis(
+      version: document.version,
+      textHash: textHash,
+      index: index,
+      tokens: tokens
+    )
+
+    analysisCache[uri] = analysis
+    return analysis
+  }
+
+  private func getBuiltinCompletionItems() -> [CompletionItem] {
+    if let cached = builtinCompletionItems {
+      return cached
+    }
+
+    var allCompletions = MetalBuiltins.getHardcodedCompletions()
+    if let documentation = documentation {
+      allCompletions += documentation.getAllCompletions()
+    }
+
+    let items = allCompletions.map { builtin -> CompletionItem in
+      let kind: CompletionItemKind
+      if builtin.label.starts(with: "[[") {
+        kind = .property
+      } else if builtin.insertText?.contains("$") == true {
+        kind = .snippet
+      } else if builtin.detail?.contains("(") == true {
+        kind = .function
+      } else if MetalBuiltins.keywords.contains(builtin.label) {
+        kind = .keyword
+      } else {
+        kind = .class
+      }
+
+      let insertTextFormat: InsertTextFormat? =
+        builtin.insertText?.contains("$") == true ? .snippet : nil
+
+      return CompletionItem(
+        label: builtin.label,
+        kind: kind,
+        detail: builtin.detail,
+        documentation: builtin.documentation,
+        insertText: builtin.insertText,
+        insertTextFormat: insertTextFormat
+      )
+    }
+
+    builtinCompletionItems = items
+    return items
+  }
+
+  private func completionItems(from index: MetalDocumentIndex) -> [CompletionItem] {
+    var items: [CompletionItem] = []
+    items.reserveCapacity(index.symbols.count)
+
+    for symbol in index.symbols {
+      let kind: CompletionItemKind
+      switch symbol.kind {
+      case .kernel, .vertex, .fragment, .function:
+        kind = .function
+      case .struct:
+        kind = .`struct`
+      case .variable:
+        kind = .variable
+      case .unknown:
+        kind = .text
+      }
+
+      items.append(
+        CompletionItem(
+          label: symbol.name,
+          kind: kind,
+          detail: symbol.detail
+        )
+      )
+    }
+
+    return items
+  }
+
+  private func completionFilterContext(in document: Document, at position: Position) -> CompletionFilterContext {
+    guard let lineText = document.line(at: position.line) else {
+      return CompletionFilterContext(prefix: nil, restrictToAttributes: false)
+    }
+
+    let cursor = min(position.character, lineText.count)
+    let beforeCursor = String(lineText.prefix(cursor))
+
+    if let lastOpen = beforeCursor.range(of: "[[", options: .backwards) {
+      let lastClose = beforeCursor.range(of: "]]", options: .backwards)
+      if lastClose == nil || lastClose!.upperBound < lastOpen.lowerBound {
+        let prefix = String(beforeCursor[lastOpen.lowerBound..<beforeCursor.endIndex])
+        return CompletionFilterContext(prefix: prefix, restrictToAttributes: true)
+      }
+    }
+
+    let chars = Array(beforeCursor)
+    var start = chars.count
+    let wordCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+    while start > 0 {
+      let char = chars[start - 1]
+      if String(char).rangeOfCharacter(from: wordCharacters) == nil {
+        break
+      }
+      start -= 1
+    }
+
+    let prefix = String(chars[start..<chars.count])
+    return CompletionFilterContext(prefix: prefix.isEmpty ? nil : prefix, restrictToAttributes: false)
+  }
+
+  private func isPositionInNonCodeToken(position: Position, tokens: [MetalToken]) -> Bool {
+    for token in tokens {
+      if token.line != position.line {
+        continue
+      }
+      guard token.type == "comment" || token.type == "string" else {
+        continue
+      }
+      if position.character >= token.column && position.character < token.column + token.length {
+        return true
+      }
+    }
+    return false
+  }
+
+  private func extractCallContext(in document: Document, at position: Position) -> CallContext? {
+    let cursorOffset = document.offsetAt(position: position)
+    let chars = Array(document.text)
+
+    guard cursorOffset <= chars.count else { return nil }
+
+    var parenDepth = 0
+    var openParenIndex: Int?
+
+    var i = min(cursorOffset - 1, chars.count - 1)
+    while i >= 0 {
+      let c = chars[i]
+
+      if c == ")" {
+        parenDepth += 1
+      } else if c == "(" {
+        if parenDepth == 0 {
+          openParenIndex = i
+          break
+        }
+        parenDepth -= 1
+      } else if parenDepth == 0 {
+        if c == ";" || c == "{" || c == "}" {
+          break
+        }
+      }
+
+      i -= 1
+    }
+
+    guard let open = openParenIndex else { return nil }
+
+    var j = open - 1
+    while j >= 0 {
+      let c = chars[j]
+      if c == " " || c == "\t" || c == "\n" || c == "\r" {
+        j -= 1
+        continue
+      }
+      break
+    }
+
+    guard j >= 0 else { return nil }
+
+    let wordCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_:"))
+    var nameStart = j
+    while nameStart >= 0 {
+      let c = chars[nameStart]
+      if String(c).rangeOfCharacter(from: wordCharacters) == nil {
+        break
+      }
+      nameStart -= 1
+    }
+    nameStart += 1
+
+    guard nameStart <= j else { return nil }
+
+    let rawName = String(chars[nameStart..<(j + 1)])
+    let functionName = rawName.split(separator: ":").last.map(String.init) ?? rawName
+
+    var activeParameter = 0
+    var depth = 0
+    if open + 1 < cursorOffset {
+      for k in (open + 1)..<min(cursorOffset, chars.count) {
+        let c = chars[k]
+        if c == "(" {
+          depth += 1
+        } else if c == ")" {
+          depth = max(0, depth - 1)
+        } else if c == "," && depth == 0 {
+          activeParameter += 1
+        }
+      }
+    }
+
+    return CallContext(functionName: functionName, activeParameter: activeParameter)
+  }
+
+  private func parseParameters(fromSignatureLabel signature: String) -> [String] {
+    guard let open = signature.firstIndex(of: "("), let close = signature.lastIndex(of: ")"), open < close else {
+      return []
+    }
+
+    let inside = signature[signature.index(after: open)..<close]
+
+    var params: [String] = []
+    var current = ""
+
+    var parenDepth = 0
+    var angleDepth = 0
+    var bracketDepth = 0
+
+    for ch in inside {
+      if ch == "," && parenDepth == 0 && angleDepth == 0 && bracketDepth == 0 {
+        let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+          params.append(trimmed)
+        }
+        current = ""
+        continue
+      }
+
+      if ch == "(" { parenDepth += 1 }
+      if ch == ")" { parenDepth = max(0, parenDepth - 1) }
+      if ch == "<" { angleDepth += 1 }
+      if ch == ">" { angleDepth = max(0, angleDepth - 1) }
+      if ch == "[" { bracketDepth += 1 }
+      if ch == "]" { bracketDepth = max(0, bracketDepth - 1) }
+
+      current.append(ch)
+    }
+
+    let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty {
+      params.append(trimmed)
+    }
+
+    return params
+  }
+
+  private func documentSymbol(from node: MetalDocumentSymbolNode) -> DocumentSymbol {
+    return documentSymbol(from: node, isChild: false)
+  }
+
+  private func documentSymbol(from node: MetalDocumentSymbolNode, isChild: Bool) -> DocumentSymbol {
+    let children = node.children.isEmpty ? nil : node.children.map { documentSymbol(from: $0, isChild: true) }
+
+    return DocumentSymbol(
+      name: node.name,
+      detail: node.detail,
+      kind: lspSymbolKind(from: node.kind, isChild: isChild),
+      range: lspRange(from: node.range),
+      selectionRange: lspRange(from: node.selectionRange),
+      children: children
+    )
+  }
+
+  private func lspRange(from range: MetalSourceRange) -> Range {
+    return Range(
+      start: Position(line: range.start.line, character: range.start.column),
+      end: Position(line: range.end.line, character: range.end.column)
+    )
+  }
+
+  private func lspSymbolKind(from kind: MetalSymbolFinder.SymbolKind, isChild: Bool) -> SymbolKind {
+    switch kind {
+    case .kernel, .vertex, .fragment, .function:
+      return .function
+    case .struct:
+      return .`struct`
+    case .variable:
+      return isChild ? .field : .variable
+    case .unknown:
+      return .variable
+    }
+  }
+
   // MARK: - Diagnostics
+
+  private func diagnosticsCacheKey(uri: String, source: String) -> UInt64 {
+    let sourceHash = stableHash(source)
+    let includeHash = includeFingerprintHash(uri: uri, source: source)
+
+    var hash = sourceHash
+    hash ^= includeHash &* 31
+    return hash
+  }
+
+  private func includeFingerprintHash(uri: String, source: String) -> UInt64 {
+    guard let fileURL = URL(string: uri), fileURL.isFileURL else {
+      return 0
+    }
+
+    let baseDir = fileURL.deletingLastPathComponent()
+    let fileManager = FileManager.default
+
+    var fingerprint = ""
+
+    for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      guard trimmed.hasPrefix("#include") else { continue }
+
+      guard let startQuote = trimmed.firstIndex(of: "\"") else { continue }
+      let afterStart = trimmed.index(after: startQuote)
+      guard let endQuote = trimmed[afterStart...].firstIndex(of: "\"") else { continue }
+
+      let includePath = String(trimmed[afterStart..<endQuote])
+      let resolvedURL = baseDir.appendingPathComponent(includePath)
+
+      fingerprint += includePath
+
+      if let attributes = try? fileManager.attributesOfItem(atPath: resolvedURL.path) {
+        let mtime = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        fingerprint += "|\(mtime)|\(size)\n"
+      } else {
+        fingerprint += "|missing\n"
+      }
+    }
+
+    return stableHash(fingerprint)
+  }
 
   private func validateDocument(uri: String) throws {
     // Get document text from manager or read from disk
@@ -642,6 +1118,17 @@ public class LanguageServer {
     }
 
     log("Validating document: \(uri)")
+
+    let cacheKey = diagnosticsCacheKey(uri: uri, source: documentText)
+    if let cached = diagnosticsCache[uri], cached.cacheKey == cacheKey {
+      for (fileURI, diagnostics) in cached.diagnosticsByURI {
+        let params = PublishDiagnosticsParams(uri: fileURI, diagnostics: diagnostics)
+        try sendNotification(method: "textDocument/publishDiagnostics", params: params)
+      }
+
+      log("Published cached diagnostics for \(cached.diagnosticsByURI.count) files")
+      return
+    }
 
     // Compile with Metal compiler
     let metalDiagnostics = metalCompiler.compile(source: documentText, uri: uri)
@@ -682,6 +1169,8 @@ public class LanguageServer {
       }
       diagnosticsByURI[diagURI]?.append(diagnostic)
     }
+
+    diagnosticsCache[uri] = CachedDiagnostics(cacheKey: cacheKey, diagnosticsByURI: diagnosticsByURI)
 
     // Publish diagnostics for each URI
     for (fileURI, diagnostics) in diagnosticsByURI {
