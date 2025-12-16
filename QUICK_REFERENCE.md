@@ -1,6 +1,6 @@
 # Metal LSP 新功能 - 快速参考指南
 
-## 三个新增 LSP 功能速查表
+## 新增 LSP 功能速查表
 
 ### 1️⃣ Go to Definition
 
@@ -173,6 +173,40 @@ Neovim:   :lua vim.lsp.buf.format()
 
 ---
 
+### 4️⃣ Signature Help
+
+| 属性 | 值 |
+|------|-----|
+| **LSP 方法** | `textDocument/signatureHelp` |
+| **请求参数** | `SignatureHelpParams` |
+| **返回类型** | `SignatureHelp` |
+| **实现方式** | 文档索引 + 调用上下文解析 |
+
+**编辑器快捷键:**
+```
+VSCode:   Ctrl+Shift+Space
+Neovim:   :lua vim.lsp.buf.signature_help()
+```
+
+---
+
+### 5️⃣ Document Symbols
+
+| 属性 | 值 |
+|------|-----|
+| **LSP 方法** | `textDocument/documentSymbol` |
+| **请求参数** | `DocumentSymbolParams` |
+| **返回类型** | `DocumentSymbol[]` |
+| **实现方式** | 轻量索引（函数/struct + struct 字段 children） |
+
+**编辑器快捷键:**
+```
+VSCode:   Ctrl+Shift+O (Go to Symbol in File)
+Neovim:   :lua vim.lsp.buf.document_symbol()
+```
+
+---
+
 ## 编辑器配置示例
 
 ### VSCode
@@ -214,6 +248,8 @@ Neovim:   :lua vim.lsp.buf.format()
 nnoremap gd <cmd>lua vim.lsp.buf.definition()<CR>
 nnoremap gr <cmd>lua vim.lsp.buf.references()<CR>
 nnoremap <leader>f <cmd>lua vim.lsp.buf.format()<CR>
+nnoremap <leader>s <cmd>lua vim.lsp.buf.signature_help()<CR>
+nnoremap <leader>o <cmd>lua vim.lsp.buf.document_symbol()<CR>
 ```
 
 #### LSP 配置

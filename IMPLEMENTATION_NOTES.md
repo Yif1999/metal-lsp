@@ -153,6 +153,44 @@ data.append(typeIndex)
 data.append(modifiers)
 ```
 
+## 5. Signature Help (textDocument/signatureHelp)
+
+### 工作原理
+1. 通过 `MetalDocumentIndexer` 为当前文档构建轻量索引（收集顶层函数签名）。
+2. 从光标位置向左扫描，找到最近的「调用括号」`(`（处理嵌套括号，避免误匹配）。
+3. 统计 `,` 计算 `activeParameter`（同样处理嵌套括号）。
+4. 优先使用 `MetalDocumentation` 的内置函数签名；否则回退到文档索引中的用户函数签名。
+
+### 鲁棒性策略
+- 如果光标位于 `string/comment` token 内，直接返回空结果
+- 如果无法解析调用上下文或找不到签名，返回空结果（避免错误提示）
+
+## 6. Document Symbols (textDocument/documentSymbol)
+
+### 工作原理
+- 使用 `MetalDocumentIndexer` 扫描顶层符号：函数（kernel/vertex/fragment/普通函数）与 struct。
+- 对 struct body 做一次轻量字段扫描，将字段作为 `children` 返回给编辑器。
+
+## 7. 缓存与增量（性能）
+
+### 1) 文档分析缓存
+- 缓存 `MetalDocumentIndexer` 的索引结果 + `MetalLexer` token 列表
+- Cache Key = `document.version + stableHash(document.text)`
+- 主要用于：Completion / Signature Help / Document Symbols
+
+### 2) Diagnostics 缓存（增量编译）
+- Cache Key = `stableHash(source) + includeFingerprintHash`
+- `includeFingerprintHash` 基于 `#include "..."` 解析到磁盘文件，并使用 `mtime/size` 生成 fingerprint
+- 避免频繁保存时重复跑 `xcrun metal`，在未变化的情况下可直接复用上次 diagnostics
+
+## 8. Context-aware Completion（补全增强）
+
+### 工作原理
+- 通过 `MetalDocumentIndexer` 提供的符号，将当前文档的函数/struct/字段加入补全列表
+- 将内置 completions 预先构建并缓存
+- 通过光标左侧文本计算 prefix，按前缀过滤
+- 如果在 `[[ ... ]]` 内，限制候选项只返回属性（`[[buffer(n)]]` 等）
+
 ## 技术架构
 
 ### 流程图
@@ -161,9 +199,9 @@ LSP 请求 (textDocument/definition 等)
     ↓
 LanguageServer.swift - 处理请求
     ↓
-MetalSymbolFinder / MetalFormatter - 处理逻辑
+MetalSymbolFinder / MetalFormatter / MetalDocumentIndexer / MetalLexer
     ↓
-正则表达式匹配或格式化
+字符匹配 / 格式化 / 轻量索引 / 语义 token
     ↓
 返回 LSP 响应
 ```
@@ -171,9 +209,10 @@ MetalSymbolFinder / MetalFormatter - 处理逻辑
 ### 文件结构
 ```
 Sources/MetalCore/
-├── MetalSymbolFinder.swift    ← 符号查找逻辑
-├── MetalFormatter.swift       ← 格式化逻辑
-├── MetalLexer.swift           ← 词法分析器
+├── MetalSymbolFinder.swift      ← 符号查找逻辑
+├── MetalFormatter.swift         ← 格式化逻辑
+├── MetalLexer.swift             ← 词法分析器
+├── MetalDocumentIndexer.swift   ← 轻量文档索引（symbols + signatures）
 └── ...
 
 Sources/MetalLanguageServer/
@@ -199,15 +238,17 @@ int x = data[some_variable];    // 会被认为是变量声明
 - 不支持跨文件的声明查找
 
 ### 3. 性能
-- 对于大型文件（>10000 行）可能较慢
-- 没有缓存机制
+- 对于大型文件（>10000 行）可能较慢（主要取决于 xcrun metal 与正则扫描成本）
+- 已加入缓存：
+  - 文档分析缓存（Completion/Signature Help/Document Symbols）
+  - Diagnostics 缓存（source hash + include fingerprint）
 
 ## 改进方向
 
 ### 短期改进
 1. **增强注释移除** - 更精确地处理多行注释
 2. **启发式规则** - 改进变量声明的检测（检查左边的类型）
-3. **缓存** - 缓存已分析的文件
+3. **索引增强** - 改进多行函数签名/复杂字段声明的识别
 
 ### 中期改进
 1. **轻量级词法分析** - 分割关键字、标识符、字符串等
@@ -226,7 +267,10 @@ int x = data[some_variable];    // 会被认为是变量声明
 Tests/MetalLSPTests/LSPIntegrationTests.swift
 ├── gotoDefinition()        ← 测试 go to definition
 ├── findReferences()        ← 测试 find references
-└── formatting()            ← 测试 code formatting
+├── formatting()            ← 测试 code formatting
+├── signatureHelp()         ← 测试 signature help
+├── documentSymbols()       ← 测试 document symbols
+└── contextAwareCompletion()← 测试本地符号 + 前缀过滤
 ```
 
 ### 运行测试

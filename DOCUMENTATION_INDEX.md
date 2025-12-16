@@ -44,7 +44,7 @@
 
 | 文档 | 内容 | 适合人群 |
 |------|------|--------|
-| **FEATURES_SUMMARY.md** | 三个新功能的详细说明、使用场景 | 最终用户、编辑器集成商 |
+| **FEATURES_SUMMARY.md** | LSP 功能说明、使用场景（含 Signature Help / Document Symbols 等） | 最终用户、编辑器集成商 |
 | **QUICK_REFERENCE.md** | 编辑器配置、快捷键、调试技巧 | 日常用户、问题排查 |
 
 ### 开发者文档
@@ -62,8 +62,10 @@
 
 ```
 Sources/MetalCore/
-├── MetalSymbolFinder.swift      ← Go to Definition + Find References
-└── MetalFormatter.swift         ← Code Formatting
+├── MetalSymbolFinder.swift        ← Go to Definition + Find References
+├── MetalFormatter.swift           ← Code Formatting
+├── MetalLexer.swift               ← Semantic Highlighting
+└── MetalDocumentIndexer.swift     ← Document Symbols + Signature Help + Local Completion
 ```
 
 ### 修改文件
@@ -133,6 +135,16 @@ Tests/MetalLSPTests/
 - 快速参考: [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) - 3️⃣ Code Formatting
 - 实现细节: [`IMPLEMENTATION_NOTES.md`](IMPLEMENTATION_NOTES.md) - 第 3 部分
 - 自定义配置: [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md) - 进阶配置部分
+
+### Signature Help
+- 快速了解: [`README.md`](README.md) - Roadmap 部分
+- 使用方法: [`FEATURES_SUMMARY.md`](FEATURES_SUMMARY.md) - 第 5 部分
+- 实现细节: [`IMPLEMENTATION_NOTES.md`](IMPLEMENTATION_NOTES.md) - 第 5 部分
+
+### Document Symbols
+- 快速了解: [`README.md`](README.md) - Roadmap 部分
+- 使用方法: [`FEATURES_SUMMARY.md`](FEATURES_SUMMARY.md) - 第 6 部分
+- 实现细节: [`IMPLEMENTATION_NOTES.md`](IMPLEMENTATION_NOTES.md) - 第 6 部分
 
 ### 字符匹配 vs AST
 - 详细分析: [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) - 全文
