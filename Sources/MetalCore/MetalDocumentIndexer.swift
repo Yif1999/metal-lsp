@@ -519,7 +519,7 @@ public final class MetalDocumentIndexer {
 
     guard isIdentifierContinue(chars[i]) else { return nil }
 
-    var end = i + 1
+    let end = i + 1
     var start = i
     while start > 0 && isIdentifierContinue(chars[start - 1]) {
       start -= 1
