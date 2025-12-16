@@ -8,8 +8,14 @@ public class LanguageServer {
   private let metalCompiler = MetalCompiler()
   private let symbolFinder = MetalSymbolFinder()
   private let formatter = MetalFormatter()
+  private let lexer = MetalLexer()
   private let verbose: Bool
   private var documentation: MetalDocumentation?
+
+  private let tokenTypes = [
+    "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter", "variable", "property", "enumMember", "event", "function", "method", "macro", "keyword", "modifier", "comment", "string", "number", "regexp", "operator"
+  ]
+  private let tokenModifiers = ["declaration", "definition", "readonly", "static", "deprecated", "abstract", "async", "modification", "documentation", "defaultLibrary"]
 
   private var isInitialized = false
   private var isShuttingDown = false
@@ -132,6 +138,17 @@ public class LanguageServer {
         let result = try handleFormatting(params: params)
         try sendResponse(id: request.id, result: result)
 
+      case "textDocument/semanticTokens/full":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(SemanticTokensParams.self)
+        let result = try handleSemanticTokens(params: params)
+        try sendResponse(id: request.id, result: result)
+
       default:
         try sendError(
           id: request.id, code: .methodNotFound,
@@ -189,6 +206,10 @@ public class LanguageServer {
       ),
       completionProvider: CompletionOptions(
         triggerCharacters: [".", "[", "(", " "]
+      ),
+      semanticTokensProvider: SemanticTokensOptions(
+          legend: SemanticTokensLegend(tokenTypes: tokenTypes, tokenModifiers: tokenModifiers),
+          full: true
       )
     )
 
@@ -506,6 +527,61 @@ public class LanguageServer {
     return try JSONValue.from(FormattingResult())
   }
 
+  private func handleSemanticTokens(params: SemanticTokensParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(SemanticTokens(data: []))
+    }
+
+    log("Semantic tokens requested for \(params.textDocument.uri)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(SemanticTokens(data: []))
+    }
+
+    let tokens = lexer.tokenize(document.text)
+    let encodedData = encodeTokens(tokens)
+
+    log("Returning \(encodedData.count / 5) tokens")
+
+    return try JSONValue.from(SemanticTokens(data: encodedData))
+  }
+
+  private func encodeTokens(_ tokens: [MetalToken]) -> [Int] {
+    var data: [Int] = []
+    var prevLine = 0
+    var prevChar = 0
+
+    for token in tokens {
+      let lineDelta = token.line - prevLine
+      let charDelta = (lineDelta == 0) ? (token.column - prevChar) : token.column
+
+      // Find index in legend
+      // If not found, fallback to variable
+      let tokenType = token.type
+      var typeIndex = tokenTypes.firstIndex(of: tokenType)
+
+      if typeIndex == nil {
+        if tokenType == "class" {
+          typeIndex = tokenTypes.firstIndex(of: "class")
+        } else {
+          typeIndex = tokenTypes.firstIndex(of: "variable")
+        }
+      }
+
+      guard let finalTypeIndex = typeIndex else { continue }
+
+      data.append(lineDelta)
+      data.append(charDelta)
+      data.append(token.length)
+      data.append(finalTypeIndex)
+      data.append(0)  // Modifiers
+
+      prevLine = token.line
+      prevChar = token.column
+    }
+    return data
+  }
+
   // MARK: - Helper Methods
 
   private func extractWordAtPosition(text: String, position: Position) -> String? {
@@ -570,8 +646,15 @@ public class LanguageServer {
     // Compile with Metal compiler
     let metalDiagnostics = metalCompiler.compile(source: documentText, uri: uri)
 
-    // Convert to LSP diagnostics
-    let diagnostics = metalDiagnostics.map { diag -> Diagnostic in
+    // Group diagnostics by URI
+    var diagnosticsByURI: [String: [Diagnostic]] = [:]
+
+    // Initialize with empty list for the main document so we clear it if no errors
+    diagnosticsByURI[uri] = []
+
+    for diag in metalDiagnostics {
+      let diagURI = diag.fileURI ?? uri
+
       let severity: DiagnosticSeverity
       switch diag.severity {
       case .error:
@@ -587,19 +670,26 @@ public class LanguageServer {
       let position = Position(line: diag.line, character: diag.column)
       let range = Range(start: position, end: position)
 
-      return Diagnostic(
+      let diagnostic = Diagnostic(
         range: range,
         severity: severity,
         message: diag.message,
         source: "metal-compiler"
       )
+
+      if diagnosticsByURI[diagURI] == nil {
+        diagnosticsByURI[diagURI] = []
+      }
+      diagnosticsByURI[diagURI]?.append(diagnostic)
     }
 
-    // Publish diagnostics
-    let params = PublishDiagnosticsParams(uri: uri, diagnostics: diagnostics)
-    try sendNotification(method: "textDocument/publishDiagnostics", params: params)
+    // Publish diagnostics for each URI
+    for (fileURI, diagnostics) in diagnosticsByURI {
+      let params = PublishDiagnosticsParams(uri: fileURI, diagnostics: diagnostics)
+      try sendNotification(method: "textDocument/publishDiagnostics", params: params)
+    }
 
-    log("Published \(diagnostics.count) diagnostics")
+    log("Published diagnostics for \(diagnosticsByURI.count) files")
   }
 
   // MARK: - Response Helpers
