@@ -29,6 +29,17 @@ public class LanguageServer {
   private var diagnosticsCache: [String: CachedDiagnostics] = [:]
   private var builtinCompletionItems: [CompletionItem]?
 
+  private struct CachedWorkspaceFile {
+    let modificationTime: TimeInterval
+    let size: UInt64
+    let source: String
+  }
+
+  private var workspaceRootURL: URL?
+  private var workspaceFileURLCache: [URL] = []
+  private var workspaceFileURLCacheRoot: URL?
+  private var workspaceFileCache: [String: CachedWorkspaceFile] = [:]
+
   private let tokenTypes = [
     "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter", "variable", "property", "enumMember", "event", "function", "method", "macro", "keyword", "modifier", "comment", "string", "number", "regexp", "operator"
   ]
@@ -237,6 +248,10 @@ public class LanguageServer {
 
   private func handleInitialize(params: InitializeParams?) throws -> JSONValue {
     log("Initializing server...")
+
+    workspaceRootURL = resolveWorkspaceRootURL(from: params)
+    workspaceFileURLCache = []
+    workspaceFileURLCacheRoot = workspaceRootURL
 
     let capabilities = ServerCapabilities(
       textDocumentSync: TextDocumentSyncOptions(
@@ -456,26 +471,16 @@ public class LanguageServer {
 
     log("Looking for definition of: \(word)")
 
-    // Find declarations of this symbol in the document
-    let declarations = symbolFinder.findDeclarations(name: word, in: document.text)
-
-    guard !declarations.isEmpty else {
-      log("No declarations found for: \(word)")
-      return JSONValue.null
+    if let includeLocation = resolveIncludeLocation(in: document, at: params.position) {
+      return try JSONValue.from(includeLocation)
     }
 
-    // Return the first declaration
-    let decl = declarations[0]
-    let location = Location(
-      uri: params.textDocument.uri,
-      range: Range(
-        start: Position(line: decl.line, character: decl.column),
-        end: Position(line: decl.line, character: decl.column + decl.name.count)
-      )
-    )
+    if let location = findBestDefinitionLocation(name: word, primaryURI: params.textDocument.uri, primarySource: document.text) {
+      return try JSONValue.from(location)
+    }
 
-    log("Found definition at line \(decl.line), column \(decl.column)")
-    return try JSONValue.from(location)
+    log("No declarations found for: \(word)")
+    return JSONValue.null
   }
 
   private func handleReferences(params: ReferenceParams?) throws -> JSONValue {
@@ -497,36 +502,12 @@ public class LanguageServer {
 
     log("Finding references to: \(word)")
 
-    // Find all references to this symbol
-    let references = symbolFinder.findReferences(name: word, in: document.text)
-
-    // Include declaration if requested
-    var locations: [Location] = []
-    if params.context.includeDeclaration {
-      let declarations = symbolFinder.findDeclarations(name: word, in: document.text)
-      for decl in declarations {
-        locations.append(
-          Location(
-            uri: params.textDocument.uri,
-            range: Range(
-              start: Position(line: decl.line, character: decl.column),
-              end: Position(line: decl.line, character: decl.column + decl.name.count)
-            )
-          ))
-      }
-    }
-
-    // Add all references
-    for ref in references {
-      locations.append(
-        Location(
-          uri: params.textDocument.uri,
-          range: Range(
-            start: Position(line: ref.line, character: ref.column),
-            end: Position(line: ref.line, character: ref.column + word.count)
-          )
-        ))
-    }
+    let locations = findReferencesInWorkspace(
+      name: word,
+      includeDeclaration: params.context.includeDeclaration,
+      primaryURI: params.textDocument.uri,
+      primarySource: document.text
+    )
 
     log("Found \(locations.count) references")
     return try JSONValue.from(locations)
@@ -759,6 +740,296 @@ public class LanguageServer {
       hash &*= 1099511628211
     }
     return hash
+  }
+
+  private func resolveWorkspaceRootURL(from params: InitializeParams?) -> URL? {
+    if let folders = params?.workspaceFolders {
+      for folder in folders {
+        if let url = URL(string: folder.uri), url.isFileURL {
+          return url
+        }
+      }
+    }
+
+    if let rootUri = params?.rootUri, let url = URL(string: rootUri), url.isFileURL {
+      return url
+    }
+
+    if let rootPath = params?.rootPath {
+      return URL(fileURLWithPath: rootPath, isDirectory: true)
+    }
+
+    return nil
+  }
+
+  private func workspaceCandidateURIs() -> [String] {
+    var uris = Set(documentManager.getAllDocuments())
+
+    for url in workspaceCandidateFileURLs() {
+      uris.insert(url.absoluteString)
+    }
+
+    return uris.sorted()
+  }
+
+  private func workspaceCandidateFileURLs() -> [URL] {
+    guard let root = workspaceRootURL, root.isFileURL else { return [] }
+
+    if workspaceFileURLCacheRoot == root, !workspaceFileURLCache.isEmpty {
+      return workspaceFileURLCache
+    }
+
+    guard FileManager.default.fileExists(atPath: root.path) else {
+      workspaceFileURLCache = []
+      workspaceFileURLCacheRoot = root
+      return []
+    }
+
+    let excludedDirectories: Set<String> = [
+      ".git", ".build", ".swiftpm", "DerivedData", "build", ".vscode", ".idea"
+    ]
+
+    let allowedExtensions: Set<String> = [
+      "metal", "h", "hpp", "hh", "inc", "metalh"
+    ]
+
+    var files: [URL] = []
+
+    let keys: [URLResourceKey] = [.isDirectoryKey, .nameKey]
+    let enumerator = FileManager.default.enumerator(
+      at: root,
+      includingPropertiesForKeys: keys,
+      options: [.skipsHiddenFiles]
+    )
+
+    while let url = enumerator?.nextObject() as? URL {
+      guard let values = try? url.resourceValues(forKeys: Set(keys)) else {
+        continue
+      }
+
+      if values.isDirectory == true {
+        if let name = values.name, excludedDirectories.contains(name) {
+          enumerator?.skipDescendants()
+        }
+        continue
+      }
+
+      let ext = url.pathExtension.lowercased()
+      if allowedExtensions.contains(ext) {
+        files.append(url)
+      }
+    }
+
+    files.sort { $0.path < $1.path }
+
+    workspaceFileURLCache = files
+    workspaceFileURLCacheRoot = root
+
+    return files
+  }
+
+  private func loadWorkspaceSource(uri: String, preferredSource: String? = nil) -> String? {
+    if let preferredSource {
+      return preferredSource
+    }
+
+    if let document = documentManager.getDocument(uri: uri) {
+      return document.text
+    }
+
+    guard let url = URL(string: uri), url.isFileURL else {
+      return nil
+    }
+
+    let filePath = url.path
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: filePath) else {
+      return nil
+    }
+
+    let mtime = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+    let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+
+    if let cached = workspaceFileCache[uri], cached.modificationTime == mtime, cached.size == size {
+      return cached.source
+    }
+
+    guard let source = try? String(contentsOf: url, encoding: .utf8) else {
+      return nil
+    }
+
+    workspaceFileCache[uri] = CachedWorkspaceFile(modificationTime: mtime, size: size, source: source)
+
+    if workspaceFileCache.count > 128 {
+      workspaceFileCache.removeAll(keepingCapacity: true)
+    }
+
+    return source
+  }
+
+  private func resolveIncludeLocation(in document: Document, at position: Position) -> Location? {
+    guard let fileURL = URL(string: document.uri), fileURL.isFileURL else {
+      return nil
+    }
+
+    guard let lineText = document.line(at: position.line) else {
+      return nil
+    }
+
+    let trimmed = lineText.trimmingCharacters(in: .whitespaces)
+    guard trimmed.hasPrefix("#include") else {
+      return nil
+    }
+
+    let cursor = min(position.character, lineText.count)
+
+    if let startQuote = lineText.firstIndex(of: "\""),
+      let endQuote = lineText[lineText.index(after: startQuote)...].firstIndex(of: "\""),
+      startQuote < endQuote
+    {
+      let startColumn = lineText.distance(from: lineText.startIndex, to: startQuote)
+      let endColumn = lineText.distance(from: lineText.startIndex, to: endQuote)
+
+      guard cursor > startColumn, cursor < endColumn else {
+        return nil
+      }
+
+      let path = String(lineText[lineText.index(after: startQuote)..<endQuote])
+      let resolved = fileURL.deletingLastPathComponent().appendingPathComponent(path)
+
+      guard FileManager.default.fileExists(atPath: resolved.path) else {
+        return nil
+      }
+
+      return Location(
+        uri: resolved.absoluteString,
+        range: Range(
+          start: Position(line: 0, character: 0),
+          end: Position(line: 0, character: 0)
+        )
+      )
+    }
+
+    return nil
+  }
+
+  private func findBestDefinitionLocation(name: String, primaryURI: String, primarySource: String) -> Location? {
+    let primaryDeclarations = symbolFinder.findDeclarations(name: name, in: primarySource)
+
+    if let best = bestDeclaration(from: primaryDeclarations) {
+      return Location(
+        uri: primaryURI,
+        range: Range(
+          start: Position(line: best.line, character: best.column),
+          end: Position(line: best.line, character: best.column + best.name.count)
+        )
+      )
+    }
+
+    for uri in workspaceCandidateURIs() {
+      if uri == primaryURI {
+        continue
+      }
+
+      guard let source = loadWorkspaceSource(uri: uri) else {
+        continue
+      }
+
+      let declarations = symbolFinder.findDeclarations(name: name, in: source)
+      if let best = bestDeclaration(from: declarations) {
+        return Location(
+          uri: uri,
+          range: Range(
+            start: Position(line: best.line, character: best.column),
+            end: Position(line: best.line, character: best.column + best.name.count)
+          )
+        )
+      }
+    }
+
+    return nil
+  }
+
+  private func bestDeclaration(from declarations: [MetalSymbolFinder.SymbolDeclaration]) -> MetalSymbolFinder.SymbolDeclaration? {
+    guard !declarations.isEmpty else { return nil }
+
+    func rank(_ kind: MetalSymbolFinder.SymbolKind) -> Int {
+      switch kind {
+      case .kernel, .vertex, .fragment, .function:
+        return 0
+      case .struct:
+        return 1
+      case .variable:
+        return 2
+      case .unknown:
+        return 3
+      }
+    }
+
+    return declarations.sorted {
+      let lhsRank = rank($0.kind)
+      let rhsRank = rank($1.kind)
+      if lhsRank != rhsRank {
+        return lhsRank < rhsRank
+      }
+      if $0.line != $1.line {
+        return $0.line < $1.line
+      }
+      return $0.column < $1.column
+    }.first
+  }
+
+  private func findReferencesInWorkspace(
+    name: String,
+    includeDeclaration: Bool,
+    primaryURI: String,
+    primarySource: String
+  ) -> [Location] {
+    struct ReferenceKey: Hashable {
+      let uri: String
+      let line: Int
+      let column: Int
+    }
+
+    var locations: [Location] = []
+    var seen = Set<ReferenceKey>()
+
+    func addLocation(uri: String, line: Int, column: Int, length: Int) {
+      let key = ReferenceKey(uri: uri, line: line, column: column)
+      if seen.contains(key) {
+        return
+      }
+      seen.insert(key)
+      locations.append(
+        Location(
+          uri: uri,
+          range: Range(
+            start: Position(line: line, character: column),
+            end: Position(line: line, character: column + length)
+          )
+        )
+      )
+    }
+
+    let searchURIs = workspaceCandidateURIs()
+
+    for uri in searchURIs {
+      let source = loadWorkspaceSource(uri: uri, preferredSource: uri == primaryURI ? primarySource : nil)
+      guard let source else { continue }
+
+      if includeDeclaration {
+        let declarations = symbolFinder.findDeclarations(name: name, in: source)
+        for decl in declarations {
+          addLocation(uri: uri, line: decl.line, column: decl.column, length: decl.name.count)
+        }
+      }
+
+      let references = symbolFinder.findReferences(name: name, in: source)
+      for ref in references {
+        addLocation(uri: uri, line: ref.line, column: ref.column, length: name.count)
+      }
+    }
+
+    return locations
   }
 
   private func getAnalysis(for uri: String, document: Document) -> CachedDocumentAnalysis? {

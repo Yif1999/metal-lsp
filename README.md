@@ -17,8 +17,8 @@ A Language Server Protocol (LSP) implementation for Apple's Metal Shading Langua
   - Caches diagnostics using a stable source hash + `#include` file fingerprint (mtime/size)
 - **Semantic Highlighting**: Rich syntax highlighting using LSP semantic tokens
   - Distinguishes keywords, types, functions, variables, macros, and attributes
-- **Go to Definition**: Jump to variable/function declarations and `#include` headers
-- **Find References**: Locate all usages of a symbol across the file
+- **Go to Definition**: Jump to variable/function declarations across the workspace (and `#include` headers)
+- **Find References**: Locate all usages of a symbol across the workspace
 - **Signature Help**: Inline parameter hints when calling functions (built-ins and local functions)
 - **Document Symbols**: Outline view for top-level functions/structs (and struct fields)
 - **Code Formatting**: Format Metal code using `clang-format` or built-in fallback

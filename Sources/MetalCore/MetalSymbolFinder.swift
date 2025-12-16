@@ -36,30 +36,29 @@ public class MetalSymbolFinder {
   ///   - source: The Metal source code
   /// - Returns: Array of symbol declarations found
   public func findDeclarations(name: String, in source: String) -> [SymbolDeclaration] {
+    guard !name.isEmpty else { return [] }
+
     var declarations: [SymbolDeclaration] = []
-    let lines = source.components(separatedBy: .newlines)
+    let maskedSource = MetalSourceMasker.mask(source)
+    let lines = maskedSource.components(separatedBy: .newlines)
+
     let escapedName = NSRegularExpression.escapedPattern(for: name)
 
+    let functionRegex = try? NSRegularExpression(pattern: "\\b\(escapedName)\\s*\\(")
+    let variableRegex = try? NSRegularExpression(pattern: "\\b\(escapedName)\\s*[=;]")
+    let structRegex = try? NSRegularExpression(pattern: "\\bstruct\\s+\(escapedName)\\b")
+
     for (lineNum, line) in lines.enumerated() {
-      // Skip comments
-      let trimmedLine = removeComments(from: line)
+      let nsLine = line as NSString
+      let range = NSRange(location: 0, length: nsLine.length)
 
-      // Function declarations: type name(
-      if let regex = try? NSRegularExpression(pattern: "\\b\(escapedName)\\s*\\("),
-        let range = regex.firstMatch(
-          in: trimmedLine, range: NSRange(location: 0, length: (trimmedLine as NSString).length))?
-          .range,
-        let swiftRange = Range(range, in: trimmedLine)
-      {
-        let column = trimmedLine.distance(from: trimmedLine.startIndex, to: swiftRange.lowerBound)
-
-        // Determine function kind
+      if let match = functionRegex?.firstMatch(in: line, range: range) {
         let kind: SymbolKind
-        if trimmedLine.contains("kernel") {
+        if line.contains("kernel") {
           kind = .kernel
-        } else if trimmedLine.contains("vertex") {
+        } else if line.contains("vertex") {
           kind = .vertex
-        } else if trimmedLine.contains("fragment") {
+        } else if line.contains("fragment") {
           kind = .fragment
         } else {
           kind = .function
@@ -69,53 +68,41 @@ public class MetalSymbolFinder {
           SymbolDeclaration(
             name: name,
             line: lineNum,
-            column: column,
+            column: match.range.location,
             kind: kind
-          ))
+          )
+        )
       }
 
-      // Struct declarations: struct name {
-      if trimmedLine.contains("struct") && trimmedLine.contains(name) {
-        if let regex = try? NSRegularExpression(pattern: "\\bstruct\\s+\(escapedName)\\b"),
-          let range = regex.firstMatch(
-            in: trimmedLine, range: NSRange(location: 0, length: (trimmedLine as NSString).length))?
-            .range,
-          let swiftRange = Range(range, in: trimmedLine)
-        {
-          let column = trimmedLine.distance(from: trimmedLine.startIndex, to: swiftRange.lowerBound)
+      if let match = structRegex?.firstMatch(in: line, range: range) {
+        let structText = nsLine.substring(with: match.range)
+        if let nameRange = structText.range(of: name) {
+          let offset = structText.distance(from: structText.startIndex, to: nameRange.lowerBound)
           declarations.append(
             SymbolDeclaration(
               name: name,
               line: lineNum,
-              column: column,
+              column: match.range.location + offset,
               kind: .struct
-            ))
+            )
+          )
         }
       }
 
-      // Variable declarations: type name = or type name;
-      if let regex = try? NSRegularExpression(pattern: "\\b\(escapedName)\\s*[=;]"),
-        let range = regex.firstMatch(
-          in: trimmedLine, range: NSRange(location: 0, length: (trimmedLine as NSString).length))?
-          .range,
-        let swiftRange = Range(range, in: trimmedLine)
-      {
-        let column = trimmedLine.distance(from: trimmedLine.startIndex, to: swiftRange.lowerBound)
+      if let match = variableRegex?.firstMatch(in: line, range: range) {
+        let before = nsLine.substring(to: match.range.location)
+        let openParens = before.filter { $0 == "(" }.count
+        let closeParens = before.filter { $0 == ")" }.count
 
-        // Check if this looks like a declaration (not inside parentheses or brackets)
-        let beforeMatch = String(trimmedLine[..<swiftRange.lowerBound])
-        let openParens = beforeMatch.filter { $0 == "(" }.count
-        let closeParens = beforeMatch.filter { $0 == ")" }.count
-
-        // If balanced parentheses before this point, it's likely a declaration
         if openParens == closeParens {
           declarations.append(
             SymbolDeclaration(
               name: name,
               line: lineNum,
-              column: column,
+              column: match.range.location,
               kind: .variable
-            ))
+            )
+          )
         }
       }
     }
@@ -129,49 +116,25 @@ public class MetalSymbolFinder {
   ///   - source: The Metal source code
   /// - Returns: Array of (line, column) tuples where the symbol is referenced
   public func findReferences(name: String, in source: String) -> [(line: Int, column: Int)] {
+    guard !name.isEmpty else { return [] }
+
     var references: [(line: Int, column: Int)] = []
-    let lines = source.components(separatedBy: .newlines)
+    let maskedSource = MetalSourceMasker.mask(source)
+    let lines = maskedSource.components(separatedBy: .newlines)
+
+    let escapedName = NSRegularExpression.escapedPattern(for: name)
+    guard let regex = try? NSRegularExpression(pattern: "\\b\(escapedName)\\b") else {
+      return []
+    }
 
     for (lineNum, line) in lines.enumerated() {
-      // Skip comments
-      let trimmedLine = removeComments(from: line)
-
-      // Find all whole-word matches of the symbol
-      // Using word boundaries \b
-      let escapedName = NSRegularExpression.escapedPattern(for: name)
-      guard let regex = try? NSRegularExpression(pattern: "\\b\(escapedName)\\b") else {
-        continue
-      }
-
-      let nsString = trimmedLine as NSString
-      let matches = regex.matches(
-        in: trimmedLine, range: NSRange(location: 0, length: nsString.length))
-
+      let nsLine = line as NSString
+      let matches = regex.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
       for match in matches {
         references.append((line: lineNum, column: match.range.location))
       }
     }
 
     return references
-  }
-
-  /// Removes comments from a line of code (both // and /* */ style)
-  /// - Parameter line: A line of Metal source code
-  /// - Returns: The line with comments removed
-  private func removeComments(from line: String) -> String {
-    // Handle line comments //
-    if let range = line.range(of: "//") {
-      return String(line[..<range.lowerBound])
-    }
-
-    // For block comments, this is simplified - just remove /* */ blocks
-    var result = line
-    while let startRange = result.range(of: "/*"),
-      let endRange = result.range(of: "*/", range: startRange.upperBound..<result.endIndex)
-    {
-      result.removeSubrange(startRange.lowerBound..<endRange.upperBound)
-    }
-
-    return result
   }
 }

@@ -680,6 +680,221 @@ struct LSPIntegrationTests {
     }
   }
 
+  @Test("Go to definition works across workspace files")
+  func gotoDefinitionAcrossFiles() throws {
+    let tempDir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("metal_lsp_workspace_\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let declFile = tempDir.appendingPathComponent("Decl.metal")
+    let useFile = tempDir.appendingPathComponent("Use.metal")
+
+    let declCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      float foo(float x) {
+          return x;
+      }
+      """
+
+    let useCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      kernel void test() {
+          float x = foo(1.0);
+      }
+      """
+
+    try declCode.write(to: declFile, atomically: true, encoding: .utf8)
+    try useCode.write(to: useFile, atomically: true, encoding: .utf8)
+
+    let server = try ServerHandle()
+
+    // Initialize with workspace root
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": tempDir.absoluteString,
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    // Open only the usage document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": useFile.absoluteString,
+            "languageId": "metal",
+            "version": 1,
+            "text": useCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    guard let callLineIndex = useCode.components(separatedBy: .newlines).firstIndex(where: { $0.contains("foo(1.0") }) else {
+      Issue.record("Call line not found")
+      return
+    }
+
+    let callLine = useCode.components(separatedBy: .newlines)[callLineIndex]
+    guard let fooRange = callLine.range(of: "foo") else {
+      Issue.record("Call symbol not found")
+      return
+    }
+
+    let column = callLine.distance(from: callLine.startIndex, to: fooRange.lowerBound) + 1
+
+    // Request definition for "foo"
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/definition",
+        "params": [
+          "textDocument": ["uri": useFile.absoluteString],
+          "position": ["line": callLineIndex, "character": column],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No cross-file definition response")
+      return
+    }
+
+    guard let result = response["result"] as? [String: Any] else {
+      Issue.record("Cross-file definition returned no result")
+      return
+    }
+
+    #expect(result["uri"] as? String == declFile.absoluteString)
+  }
+
+  @Test("Find references locates usages across workspace files")
+  func findReferencesAcrossFiles() throws {
+    let tempDir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("metal_lsp_workspace_refs_\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let declFile = tempDir.appendingPathComponent("Decl.metal")
+    let useFile = tempDir.appendingPathComponent("Use.metal")
+
+    let declCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      float foo(float x) {
+          return x;
+      }
+      """
+
+    let useCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      kernel void test() {
+          float x = foo(1.0);
+      }
+      """
+
+    try declCode.write(to: declFile, atomically: true, encoding: .utf8)
+    try useCode.write(to: useFile, atomically: true, encoding: .utf8)
+
+    let server = try ServerHandle()
+
+    // Initialize with workspace root
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": tempDir.absoluteString,
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": useFile.absoluteString,
+            "languageId": "metal",
+            "version": 1,
+            "text": useCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    guard let callLineIndex = useCode.components(separatedBy: .newlines).firstIndex(where: { $0.contains("foo(1.0") }) else {
+      Issue.record("Call line not found")
+      return
+    }
+
+    let callLine = useCode.components(separatedBy: .newlines)[callLineIndex]
+    guard let fooRange = callLine.range(of: "foo") else {
+      Issue.record("Call symbol not found")
+      return
+    }
+
+    let column = callLine.distance(from: callLine.startIndex, to: fooRange.lowerBound) + 1
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/references",
+        "params": [
+          "textDocument": ["uri": useFile.absoluteString],
+          "position": ["line": callLineIndex, "character": column],
+          "context": ["includeDeclaration": true],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No cross-file references response")
+      return
+    }
+
+    guard let result = response["result"] as? [[String: Any]] else {
+      Issue.record("Cross-file references returned no result")
+      return
+    }
+
+    let uris = Set(result.compactMap { $0["uri"] as? String })
+    #expect(uris.contains(declFile.absoluteString))
+    #expect(uris.contains(useFile.absoluteString))
+  }
+
   @Test("Find references locates all usages of a symbol")
   func findReferences() throws {
     let server = try ServerHandle()
