@@ -190,6 +190,48 @@ struct Hover: Codable {
 
 typealias HoverParams = TextDocumentPositionParams
 
+// MARK: - Definition Types
+
+typealias DefinitionParams = TextDocumentPositionParams
+
+typealias LocationResult = Location
+
+// MARK: - References Types
+
+struct ReferenceParams: Codable {
+  let textDocument: TextDocumentIdentifier
+  let position: Position
+  let context: ReferenceContext
+}
+
+struct ReferenceContext: Codable {
+  let includeDeclaration: Bool
+}
+
+typealias ReferenceResult = [Location]
+
+// MARK: - Formatting Types
+
+struct FormattingParams: Codable {
+  let textDocument: TextDocumentIdentifier
+  let options: FormattingOptions
+}
+
+struct FormattingOptions: Codable {
+  let tabSize: Int
+  let insertSpaces: Bool
+  let trimTrailingWhitespace: Bool?
+  let insertFinalNewline: Bool?
+  let trimFinalNewlines: Bool?
+}
+
+struct TextEdit: Codable {
+  let range: Range
+  let newText: String
+}
+
+typealias FormattingResult = [TextEdit]
+
 // MARK: - Initialize Types
 
 struct InitializeParams: Codable {
@@ -232,15 +274,24 @@ struct ServerCapabilities: Codable {
   let textDocumentSync: TextDocumentSyncOptions?
   let completionProvider: CompletionOptions?
   let hoverProvider: Bool?
+  let definitionProvider: Bool?
+  let referencesProvider: Bool?
+  let documentFormattingProvider: Bool?
 
   init(
     textDocumentSync: TextDocumentSyncOptions,
     completionProvider: CompletionOptions,
-    hoverProvider: Bool = true
+    hoverProvider: Bool = true,
+    definitionProvider: Bool = true,
+    referencesProvider: Bool = true,
+    documentFormattingProvider: Bool = true
   ) {
     self.textDocumentSync = textDocumentSync
     self.completionProvider = completionProvider
     self.hoverProvider = hoverProvider
+    self.definitionProvider = definitionProvider
+    self.referencesProvider = referencesProvider
+    self.documentFormattingProvider = documentFormattingProvider
   }
 }
 

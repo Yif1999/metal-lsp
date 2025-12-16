@@ -6,6 +6,8 @@ public class LanguageServer {
   private let transport: MessageTransport
   private let documentManager = DocumentManager()
   private let metalCompiler = MetalCompiler()
+  private let symbolFinder = MetalSymbolFinder()
+  private let formatter = MetalFormatter()
   private let verbose: Bool
   private var documentation: MetalDocumentation?
 
@@ -95,6 +97,39 @@ public class LanguageServer {
         }
         let params = try request.params?.decode(HoverParams.self)
         let result = try handleHover(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/definition":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(DefinitionParams.self)
+        let result = try handleDefinition(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/references":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(ReferenceParams.self)
+        let result = try handleReferences(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/formatting":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(FormattingParams.self)
+        let result = try handleFormatting(params: params)
         try sendResponse(id: request.id, result: result)
 
       default:
@@ -297,7 +332,8 @@ public class LanguageServer {
 
     // Try to find documentation from the JSON documentation first
     if let documentation = documentation,
-       let entry = documentation.lookup(word) {
+      let entry = documentation.lookup(word)
+    {
       log("Found JSON documentation for: \(word)")
 
       let hover = Hover(
@@ -332,6 +368,142 @@ public class LanguageServer {
     )
 
     return try JSONValue.from(hover)
+  }
+
+  private func handleDefinition(params: DefinitionParams?) throws -> JSONValue {
+    guard let params = params else {
+      return JSONValue.null
+    }
+
+    log("Definition requested at \(params.position.line):\(params.position.character)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      log("Document not found: \(params.textDocument.uri)")
+      return JSONValue.null
+    }
+
+    guard let word = extractWordAtPosition(text: document.text, position: params.position) else {
+      log("No word found at position")
+      return JSONValue.null
+    }
+
+    log("Looking for definition of: \(word)")
+
+    // Find declarations of this symbol in the document
+    let declarations = symbolFinder.findDeclarations(name: word, in: document.text)
+
+    guard !declarations.isEmpty else {
+      log("No declarations found for: \(word)")
+      return JSONValue.null
+    }
+
+    // Return the first declaration
+    let decl = declarations[0]
+    let location = Location(
+      uri: params.textDocument.uri,
+      range: Range(
+        start: Position(line: decl.line, character: decl.column),
+        end: Position(line: decl.line, character: decl.column + decl.name.count)
+      )
+    )
+
+    log("Found definition at line \(decl.line), column \(decl.column)")
+    return try JSONValue.from(location)
+  }
+
+  private func handleReferences(params: ReferenceParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(ReferenceResult())
+    }
+
+    log("References requested at \(params.position.line):\(params.position.character)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      log("Document not found: \(params.textDocument.uri)")
+      return try JSONValue.from(ReferenceResult())
+    }
+
+    guard let word = extractWordAtPosition(text: document.text, position: params.position) else {
+      log("No word found at position")
+      return try JSONValue.from(ReferenceResult())
+    }
+
+    log("Finding references to: \(word)")
+
+    // Find all references to this symbol
+    let references = symbolFinder.findReferences(name: word, in: document.text)
+
+    // Include declaration if requested
+    var locations: [Location] = []
+    if params.context.includeDeclaration {
+      let declarations = symbolFinder.findDeclarations(name: word, in: document.text)
+      for decl in declarations {
+        locations.append(
+          Location(
+            uri: params.textDocument.uri,
+            range: Range(
+              start: Position(line: decl.line, character: decl.column),
+              end: Position(line: decl.line, character: decl.column + decl.name.count)
+            )
+          ))
+      }
+    }
+
+    // Add all references
+    for ref in references {
+      locations.append(
+        Location(
+          uri: params.textDocument.uri,
+          range: Range(
+            start: Position(line: ref.line, character: ref.column),
+            end: Position(line: ref.line, character: ref.column + word.count)
+          )
+        ))
+    }
+
+    log("Found \(locations.count) references")
+    return try JSONValue.from(locations)
+  }
+
+  private func handleFormatting(params: FormattingParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(FormattingResult())
+    }
+
+    log("Formatting requested for \(params.textDocument.uri)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      log("Document not found: \(params.textDocument.uri)")
+      return try JSONValue.from(FormattingResult())
+    }
+
+    let originalText = document.text
+    let formattedText = formatter.format(
+      source: originalText,
+      tabSize: params.options.tabSize,
+      insertSpaces: params.options.insertSpaces
+    )
+
+    // If formatting succeeded and produced different output, return a single edit
+    if formattedText != originalText {
+      let lines = originalText.components(separatedBy: .newlines)
+      let endLine = lines.count - 1
+      let lastLine = lines.isEmpty ? "" : lines[endLine]
+
+      let edit = TextEdit(
+        range: Range(
+          start: Position(line: 0, character: 0),
+          end: Position(line: endLine, character: lastLine.count)
+        ),
+        newText: formattedText
+      )
+
+      log("Formatting produced changes")
+      return try JSONValue.from([edit])
+    }
+
+    log("No formatting changes needed")
+    return try JSONValue.from(FormattingResult())
   }
 
   // MARK: - Helper Methods
