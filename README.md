@@ -14,12 +14,18 @@ A Language Server Protocol (LSP) implementation for Apple's Metal Shading Langua
 - **Real-time Diagnostics**: Validates Metal shaders using the official Metal compiler (`xcrun metal`)
   - Supports error checking in `#include` files
   - Maps diagnostics back to the correct source file
+  - Caches diagnostics using a stable source hash + `#include` file fingerprint (mtime/size)
 - **Semantic Highlighting**: Rich syntax highlighting using LSP semantic tokens
   - Distinguishes keywords, types, functions, variables, macros, and attributes
-- **Go to Definition**: Jump to variable/function declarations and `#include` headers
-- **Find References**: Locate all usages of a symbol across the file
+- **Go to Definition**: Jump to variable/function declarations across the workspace (and `#include` headers)
+- **Find References**: Locate all usages of a symbol across the workspace
+- **Signature Help**: Inline parameter hints when calling functions (built-ins and local functions)
+- **Document Symbols**: Outline view for top-level functions/structs (and struct fields)
 - **Code Formatting**: Format Metal code using `clang-format` or built-in fallback
 - **Auto-completion**: Comprehensive completion support for:
+  - Includes local symbols from the current document
+  - Prefix filtering (so typing `myH` prefers `myHelper`)
+  - Attribute-only suggestions when typing inside `[[ ... ]]`
   - Built-in types (float4, half3, texture2d, etc.)
   - Math functions (sin, cos, normalize, dot, cross, etc.)
   - Geometric functions
@@ -270,10 +276,10 @@ Future enhancements:
 - [x] Go to definition (variable/function declarations)
 - [x] Find references (symbol usage search)
 - [x] Code formatting (via clang-format)
-- [ ] Signature help for functions
-- [ ] Document symbols
-- [ ] Incremental compilation for better performance
-- [ ] Context-aware completion (filter by scope)
+- [x] Signature help for functions
+- [x] Document symbols
+- [x] Incremental compilation for better performance
+- [x] Context-aware completion (filter by scope)
 
 ## License
 

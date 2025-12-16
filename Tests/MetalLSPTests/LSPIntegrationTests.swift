@@ -197,6 +197,8 @@ struct LSPIntegrationTests {
     #expect(capabilities["completionProvider"] != nil)
     #expect(capabilities["textDocumentSync"] != nil)
     #expect(capabilities["hoverProvider"] as? Bool == true)
+    #expect(capabilities["signatureHelpProvider"] != nil)
+    #expect(capabilities["documentSymbolProvider"] as? Bool == true)
 
     // Send initialized notification
     let initializedNotification: [String: Any] = [
@@ -267,16 +269,25 @@ struct LSPIntegrationTests {
 
     #expect(response["id"] as? Int == 2)
 
-    if let items = response["result"] as? [[String: Any]] {
-      #expect(!items.isEmpty, "Should have completion items")
-
-      let labels = items.compactMap { $0["label"] as? String }
-      #expect(labels.contains { $0.contains("float") }, "Should contain float completions")
+    guard let result = response["result"] as? [String: Any],
+      let items = result["items"] as? [[String: Any]]
+    else {
+      Issue.record("Completion result did not include items")
+      return
     }
+
+    #expect(!items.isEmpty, "Should have completion items")
+
+    let labels = items.compactMap { $0["label"] as? String }
+    #expect(labels.contains { $0.contains("float") }, "Should contain float completions")
   }
 
   @Test("Diagnostics reports errors in Metal code")
   func diagnostics() throws {
+    guard FileManager.default.fileExists(atPath: "/usr/bin/xcrun") else {
+      return
+    }
+
     let server = try ServerHandle()
 
     // Initialize
@@ -374,6 +385,10 @@ struct LSPIntegrationTests {
 
   @Test("Diagnostics work with include files")
   func diagnosticsWithIncludes() throws {
+    guard FileManager.default.fileExists(atPath: "/usr/bin/xcrun") else {
+      return
+    }
+
     let server = try ServerHandle()
 
     // Initialize
@@ -665,6 +680,221 @@ struct LSPIntegrationTests {
     }
   }
 
+  @Test("Go to definition works across workspace files")
+  func gotoDefinitionAcrossFiles() throws {
+    let tempDir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("metal_lsp_workspace_\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let declFile = tempDir.appendingPathComponent("Decl.metal")
+    let useFile = tempDir.appendingPathComponent("Use.metal")
+
+    let declCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      float foo(float x) {
+          return x;
+      }
+      """
+
+    let useCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      kernel void test() {
+          float x = foo(1.0);
+      }
+      """
+
+    try declCode.write(to: declFile, atomically: true, encoding: .utf8)
+    try useCode.write(to: useFile, atomically: true, encoding: .utf8)
+
+    let server = try ServerHandle()
+
+    // Initialize with workspace root
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": tempDir.absoluteString,
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    // Open only the usage document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": useFile.absoluteString,
+            "languageId": "metal",
+            "version": 1,
+            "text": useCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    guard let callLineIndex = useCode.components(separatedBy: .newlines).firstIndex(where: { $0.contains("foo(1.0") }) else {
+      Issue.record("Call line not found")
+      return
+    }
+
+    let callLine = useCode.components(separatedBy: .newlines)[callLineIndex]
+    guard let fooRange = callLine.range(of: "foo") else {
+      Issue.record("Call symbol not found")
+      return
+    }
+
+    let column = callLine.distance(from: callLine.startIndex, to: fooRange.lowerBound) + 1
+
+    // Request definition for "foo"
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/definition",
+        "params": [
+          "textDocument": ["uri": useFile.absoluteString],
+          "position": ["line": callLineIndex, "character": column],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No cross-file definition response")
+      return
+    }
+
+    guard let result = response["result"] as? [String: Any] else {
+      Issue.record("Cross-file definition returned no result")
+      return
+    }
+
+    #expect(result["uri"] as? String == declFile.absoluteString)
+  }
+
+  @Test("Find references locates usages across workspace files")
+  func findReferencesAcrossFiles() throws {
+    let tempDir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("metal_lsp_workspace_refs_\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDir) }
+
+    let declFile = tempDir.appendingPathComponent("Decl.metal")
+    let useFile = tempDir.appendingPathComponent("Use.metal")
+
+    let declCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      float foo(float x) {
+          return x;
+      }
+      """
+
+    let useCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      kernel void test() {
+          float x = foo(1.0);
+      }
+      """
+
+    try declCode.write(to: declFile, atomically: true, encoding: .utf8)
+    try useCode.write(to: useFile, atomically: true, encoding: .utf8)
+
+    let server = try ServerHandle()
+
+    // Initialize with workspace root
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": tempDir.absoluteString,
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": useFile.absoluteString,
+            "languageId": "metal",
+            "version": 1,
+            "text": useCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    guard let callLineIndex = useCode.components(separatedBy: .newlines).firstIndex(where: { $0.contains("foo(1.0") }) else {
+      Issue.record("Call line not found")
+      return
+    }
+
+    let callLine = useCode.components(separatedBy: .newlines)[callLineIndex]
+    guard let fooRange = callLine.range(of: "foo") else {
+      Issue.record("Call symbol not found")
+      return
+    }
+
+    let column = callLine.distance(from: callLine.startIndex, to: fooRange.lowerBound) + 1
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/references",
+        "params": [
+          "textDocument": ["uri": useFile.absoluteString],
+          "position": ["line": callLineIndex, "character": column],
+          "context": ["includeDeclaration": true],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No cross-file references response")
+      return
+    }
+
+    guard let result = response["result"] as? [[String: Any]] else {
+      Issue.record("Cross-file references returned no result")
+      return
+    }
+
+    let uris = Set(result.compactMap { $0["uri"] as? String })
+    #expect(uris.contains(declFile.absoluteString))
+    #expect(uris.contains(useFile.absoluteString))
+  }
+
   @Test("Find references locates all usages of a symbol")
   func findReferences() throws {
     let server = try ServerHandle()
@@ -813,6 +1043,284 @@ struct LSPIntegrationTests {
       // Should get some edits (or empty array if no formatting changes needed)
       #expect(true, "Formatting returned edits")
     }
+  }
+
+  @Test("Signature help provides signatures for user functions")
+  func signatureHelp() throws {
+    let server = try ServerHandle()
+
+    // Initialize
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": "file:///tmp/test",
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    let metalCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      float4 foo(float3 a, float b) {
+          return float4(a, b);
+      }
+
+      kernel void test() {
+          float4 x = foo(float3(0.0), 1.0);
+      }
+      """
+
+    // Open document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": "file:///tmp/test_signature.metal",
+            "languageId": "metal",
+            "version": 1,
+            "text": metalCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    let lines = metalCode.components(separatedBy: .newlines)
+    guard let callLineIndex = lines.firstIndex(where: { $0.contains("foo(float3") }) else {
+      Issue.record("Call line not found")
+      return
+    }
+
+    guard let oneIndex = lines[callLineIndex].firstIndex(of: "1") else {
+      Issue.record("Argument index not found")
+      return
+    }
+
+    let column = lines[callLineIndex].distance(from: lines[callLineIndex].startIndex, to: oneIndex)
+
+    // Request signature help (position inside second argument)
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/signatureHelp",
+        "params": [
+          "textDocument": ["uri": "file:///tmp/test_signature.metal"],
+          "position": ["line": callLineIndex, "character": column],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No signatureHelp response")
+      return
+    }
+
+    guard let result = response["result"] as? [String: Any],
+      let signatures = result["signatures"] as? [[String: Any]]
+    else {
+      Issue.record("signatureHelp result missing signatures")
+      return
+    }
+
+    #expect(!signatures.isEmpty)
+
+    let label = signatures.first?["label"] as? String
+    #expect(label?.contains("foo(") == true)
+
+    #expect(result["activeParameter"] as? Int == 1)
+  }
+
+  @Test("Document symbols lists top-level declarations")
+  func documentSymbols() throws {
+    let server = try ServerHandle()
+
+    // Initialize
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": "file:///tmp/test",
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    let metalCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      struct VertexIn {
+          float3 position [[attribute(0)]];
+      };
+
+      float foo(float x) {
+          return x;
+      }
+      """
+
+    // Open document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": "file:///tmp/test_symbols.metal",
+            "languageId": "metal",
+            "version": 1,
+            "text": metalCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    // Request document symbols
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/documentSymbol",
+        "params": [
+          "textDocument": ["uri": "file:///tmp/test_symbols.metal"]
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No documentSymbol response")
+      return
+    }
+
+    guard let result = response["result"] as? [[String: Any]] else {
+      Issue.record("documentSymbol result missing")
+      return
+    }
+
+    let names = result.compactMap { $0["name"] as? String }
+    #expect(names.contains("VertexIn"))
+    #expect(names.contains("foo"))
+
+    if let vertexSymbol = result.first(where: { ($0["name"] as? String) == "VertexIn" }),
+      let children = vertexSymbol["children"] as? [[String: Any]]
+    {
+      let childNames = children.compactMap { $0["name"] as? String }
+      #expect(childNames.contains("position"))
+    }
+  }
+
+  @Test("Completion includes local symbols and filters by prefix")
+  func contextAwareCompletion() throws {
+    let server = try ServerHandle()
+
+    // Initialize
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+          "processId": NSNull(),
+          "rootUri": "file:///tmp/test",
+          "capabilities": [:],
+        ],
+      ], to: server.inputPipe)
+    _ = try readMessage(from: server.outputPipe)
+
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": [:],
+      ], to: server.inputPipe)
+
+    let metalCode = """
+      #include <metal_stdlib>
+      using namespace metal;
+
+      float myHelper(float x) {
+          return x;
+      }
+
+      kernel void test() {
+          float value = myH
+      }
+      """
+
+    // Open document
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": [
+          "textDocument": [
+            "uri": "file:///tmp/test_completion_local.metal",
+            "languageId": "metal",
+            "version": 1,
+            "text": metalCode,
+          ]
+        ],
+      ], to: server.inputPipe)
+
+    let lines = metalCode.components(separatedBy: .newlines)
+    guard let callLineIndex = lines.firstIndex(where: { $0.contains("myH") }) else {
+      Issue.record("Completion line not found")
+      return
+    }
+
+    guard let myHRange = lines[callLineIndex].range(of: "myH") else {
+      Issue.record("Prefix not found")
+      return
+    }
+
+    let column = lines[callLineIndex].distance(from: lines[callLineIndex].startIndex, to: myHRange.upperBound)
+
+    // Request completion at end of prefix
+    try sendMessage(
+      [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/completion",
+        "params": [
+          "textDocument": ["uri": "file:///tmp/test_completion_local.metal"],
+          "position": ["line": callLineIndex, "character": column],
+        ],
+      ], to: server.inputPipe)
+
+    guard let response = try readResponse(withId: 2, from: server.outputPipe) else {
+      Issue.record("No completion response")
+      return
+    }
+
+    guard let result = response["result"] as? [String: Any],
+      let items = result["items"] as? [[String: Any]]
+    else {
+      Issue.record("Completion result did not include items")
+      return
+    }
+
+    let labels = items.compactMap { $0["label"] as? String }
+    #expect(labels.contains("myHelper"))
   }
 
   @Test("A server responds to shutdown request")

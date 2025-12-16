@@ -232,6 +232,91 @@ struct TextEdit: Codable {
 
 typealias FormattingResult = [TextEdit]
 
+// MARK: - Signature Help Types
+
+struct SignatureHelpOptions: Codable {
+  let triggerCharacters: [String]?
+  let retriggerCharacters: [String]?
+
+  init(triggerCharacters: [String]) {
+    self.triggerCharacters = triggerCharacters
+    self.retriggerCharacters = triggerCharacters
+  }
+}
+
+struct SignatureHelpParams: Codable {
+  let textDocument: TextDocumentIdentifier
+  let position: Position
+  let context: SignatureHelpContext?
+}
+
+struct SignatureHelpContext: Codable {
+  let triggerKind: Int
+  let triggerCharacter: String?
+}
+
+struct SignatureHelp: Codable {
+  let signatures: [SignatureInformation]
+  let activeSignature: Int?
+  let activeParameter: Int?
+}
+
+struct SignatureInformation: Codable {
+  let label: String
+  let documentation: String?
+  let parameters: [ParameterInformation]?
+}
+
+struct ParameterInformation: Codable {
+  let label: String
+}
+
+// MARK: - Document Symbols Types
+
+enum SymbolKind: Int, Codable {
+  case file = 1
+  case module = 2
+  case namespace = 3
+  case package = 4
+  case `class` = 5
+  case method = 6
+  case property = 7
+  case field = 8
+  case constructor = 9
+  case `enum` = 10
+  case interface = 11
+  case function = 12
+  case variable = 13
+  case constant = 14
+  case string = 15
+  case number = 16
+  case boolean = 17
+  case array = 18
+  case object = 19
+  case key = 20
+  case null = 21
+  case enumMember = 22
+  case `struct` = 23
+  case event = 24
+  case `operator` = 25
+  case typeParameter = 26
+}
+
+struct DocumentSymbol: Codable {
+  let name: String
+  let detail: String?
+  let kind: SymbolKind
+  let range: Range
+  let selectionRange: Range
+  let children: [DocumentSymbol]?
+}
+
+struct DocumentSymbolParams: Codable {
+  let textDocument: TextDocumentIdentifier
+}
+
+typealias DocumentSymbolResult = [DocumentSymbol]
+
 // MARK: - Initialize Types
 
 struct InitializeParams: Codable {
@@ -277,6 +362,8 @@ struct ServerCapabilities: Codable {
   let definitionProvider: Bool?
   let referencesProvider: Bool?
   let documentFormattingProvider: Bool?
+  let documentSymbolProvider: Bool?
+  let signatureHelpProvider: SignatureHelpOptions?
   let semanticTokensProvider: SemanticTokensOptions?
 
   init(
@@ -286,6 +373,8 @@ struct ServerCapabilities: Codable {
     definitionProvider: Bool = true,
     referencesProvider: Bool = true,
     documentFormattingProvider: Bool = true,
+    documentSymbolProvider: Bool = true,
+    signatureHelpProvider: SignatureHelpOptions? = nil,
     semanticTokensProvider: SemanticTokensOptions? = nil
   ) {
     self.textDocumentSync = textDocumentSync
@@ -294,6 +383,8 @@ struct ServerCapabilities: Codable {
     self.definitionProvider = definitionProvider
     self.referencesProvider = referencesProvider
     self.documentFormattingProvider = documentFormattingProvider
+    self.documentSymbolProvider = documentSymbolProvider
+    self.signatureHelpProvider = signatureHelpProvider
     self.semanticTokensProvider = semanticTokensProvider
   }
 }

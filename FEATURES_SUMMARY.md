@@ -80,7 +80,7 @@ vertex float4 vs() {
 **特点**:
 - ✅ 全字匹配（不匹配子串）
 - ✅ 可选包含声明位置
-- ✅ 单文件支持
+- ✅ 跨文件支持（扫描 workspace 下的 Metal/头文件）
 
 ---
 
@@ -146,6 +146,49 @@ kernel void test() {
 
 ---
 
+### ✅ 5. Signature Help (`textDocument/signatureHelp`)
+
+**目的**: 在调用函数时显示参数签名与当前参数索引，减少频繁跳转到定义/文档。
+
+**示例**:
+```metal
+float4 foo(float3 a, float b) { ... }
+
+kernel void test() {
+    float4 x = foo(float3(0.0), 1.0);
+                   //       ^ 光标在这里会显示 foo(float3 a, float b)
+}
+```
+
+**特点**:
+- ✅ 支持内置函数（来自 Spec 文档）
+- ✅ 支持当前文件内的用户函数
+- ✅ 计算当前 activeParameter（基于括号/逗号计数，忽略嵌套括号）
+
+---
+
+### ✅ 6. Document Symbols (`textDocument/documentSymbol`)
+
+**目的**: 为编辑器的 Outline / Symbol 面板提供结构化的符号列表。
+
+**返回内容**:
+- 顶层函数（kernel/vertex/fragment/普通函数）
+- 顶层 struct
+- struct 字段作为 children（便于快速定位 stage_in / attribute 绑定）
+
+---
+
+### ✅ 7. Context-aware Completion（补全增强）
+
+**目的**: 在保持零依赖与高性能的前提下，让补全更贴近实际编写体验。
+
+**增强点**:
+- ✅ 将当前文档中的函数/struct/字段加入补全
+- ✅ 按前缀过滤（例如输入 `myH` 优先显示 `myHelper`）
+- ✅ 在 `[[ ... ]]` 内只返回属性相关候选项
+
+---
+
 ## 📊 功能对比
 
 | 功能 | 前 | 现在 |
@@ -153,6 +196,9 @@ kernel void test() {
 | Go to Definition | ❌ | ✅ |
 | Find References | ❌ | ✅ |
 | Code Formatting | ❌ | ✅ |
+| Semantic Highlighting | ❌ | ✅ |
+| Signature Help | ❌ | ✅ |
+| Document Symbols | ❌ | ✅ |
 | Hover | ✅ | ✅ |
 | Completion | ✅ | ✅ |
 | Diagnostics | ✅ | ✅ |
@@ -185,18 +231,32 @@ public class MetalFormatter {
 }
 ```
 
+#### MetalDocumentIndexer
+```swift
+public final class MetalDocumentIndexer {
+  // 生成轻量索引：
+  // - 顶层函数/struct 符号
+  // - struct 字段（children）
+  // - 函数签名（用于 signatureHelp）
+  func index(source: String) -> MetalDocumentIndex
+}
+```
+
 ### LSP 类型定义
 
 ```swift
 // 请求参数
-struct DefinitionParams     // = TextDocumentPositionParams
-struct ReferenceParams      // 包含 position + context
-struct FormattingParams     // 包含 options
+struct DefinitionParams        // = TextDocumentPositionParams
+struct ReferenceParams         // position + context
+struct FormattingParams        // options
+struct SignatureHelpParams     // position + context (optional)
+struct DocumentSymbolParams    // textDocument
 
 // 响应类型
-typealias LocationResult    // = Location
-typealias ReferenceResult   // = [Location]
-typealias FormattingResult  // = [TextEdit]
+typealias LocationResult       // = Location
+typealias ReferenceResult      // = [Location]
+typealias FormattingResult     // = [TextEdit]
+typealias DocumentSymbolResult // = [DocumentSymbol]
 ```
 
 ---
@@ -208,6 +268,9 @@ typealias FormattingResult  // = [TextEdit]
 | Go to Definition | 10-50ms | ~85% | 低 |
 | Find References | 20-80ms | ~85% | 低 |
 | Code Formatting | 30-100ms | ~90% | 中 |
+| Document Symbols | 5-30ms | ~85% | 低 |
+| Signature Help | 5-30ms | ~85% | 低 |
+| Diagnostics (cached) | 1-5ms | ✅ | 低 |
 
 ---
 
