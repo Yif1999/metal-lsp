@@ -277,6 +277,7 @@ struct ServerCapabilities: Codable {
   let definitionProvider: Bool?
   let referencesProvider: Bool?
   let documentFormattingProvider: Bool?
+  let semanticTokensProvider: SemanticTokensOptions?
 
   init(
     textDocumentSync: TextDocumentSyncOptions,
@@ -284,7 +285,8 @@ struct ServerCapabilities: Codable {
     hoverProvider: Bool = true,
     definitionProvider: Bool = true,
     referencesProvider: Bool = true,
-    documentFormattingProvider: Bool = true
+    documentFormattingProvider: Bool = true,
+    semanticTokensProvider: SemanticTokensOptions? = nil
   ) {
     self.textDocumentSync = textDocumentSync
     self.completionProvider = completionProvider
@@ -292,7 +294,26 @@ struct ServerCapabilities: Codable {
     self.definitionProvider = definitionProvider
     self.referencesProvider = referencesProvider
     self.documentFormattingProvider = documentFormattingProvider
+    self.semanticTokensProvider = semanticTokensProvider
   }
+}
+
+struct SemanticTokensOptions: Codable {
+  let legend: SemanticTokensLegend
+  let full: Bool
+}
+
+struct SemanticTokensLegend: Codable {
+  let tokenTypes: [String]
+  let tokenModifiers: [String]
+}
+
+struct SemanticTokensParams: Codable {
+  let textDocument: TextDocumentIdentifier
+}
+
+struct SemanticTokens: Codable {
+  let data: [Int]
 }
 
 struct TextDocumentSyncOptions: Codable {

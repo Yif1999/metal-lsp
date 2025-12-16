@@ -28,6 +28,7 @@ public class MetalCompiler {
     } catch {
       return [
         MetalDiagnostic(
+          fileURI: uri,
           line: 0,
           column: 0,
           severity: .error,
@@ -78,6 +79,7 @@ public class MetalCompiler {
     } catch {
       return [
         MetalDiagnostic(
+          fileURI: uri,
           line: 0,
           column: 0,
           severity: .error,
@@ -98,11 +100,11 @@ public class MetalCompiler {
       at: temporaryDirectory.appendingPathComponent("shader.air")
     )
 
-    return parseDiagnostics(from: errorOutput)
+    return parseDiagnostics(from: errorOutput, mainFileURI: uri)
   }
 
   /// Parse Metal compiler output into diagnostics
-  private func parseDiagnostics(from output: String) -> [MetalDiagnostic] {
+  private func parseDiagnostics(from output: String, mainFileURI: String) -> [MetalDiagnostic] {
     var diagnostics: [MetalDiagnostic] = []
 
     let lines = output.split(separator: "\n")
@@ -111,7 +113,7 @@ public class MetalCompiler {
 
       // Parse format: "file.metal:line:column: error/warning: message"
       // Example: "shader.metal:10:5: error: use of undeclared identifier 'foo'"
-      if let diagnostic = parseDiagnosticLine(lineStr) {
+      if let diagnostic = parseDiagnosticLine(lineStr, mainFileURI: mainFileURI) {
         diagnostics.append(diagnostic)
       }
     }
@@ -119,9 +121,10 @@ public class MetalCompiler {
     return diagnostics
   }
 
-  private func parseDiagnosticLine(_ line: String) -> MetalDiagnostic? {
+  private func parseDiagnosticLine(_ line: String, mainFileURI: String) -> MetalDiagnostic? {
     // Pattern: filename:line:column: severity: message
-    let pattern = #"^.*?:(\d+):(\d+):\s*(error|warning|note):\s*(.*)$"#
+    // We capture filename in group 1
+    let pattern = #"^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.*)$"#
 
     guard let regex = try? NSRegularExpression(pattern: pattern),
       let match = regex.firstMatch(
@@ -132,14 +135,15 @@ public class MetalCompiler {
       return nil
     }
 
-    guard match.numberOfRanges == 5 else {
+    guard match.numberOfRanges == 6 else {
       return nil
     }
 
-    let lineNum = Int((line as NSString).substring(with: match.range(at: 1))) ?? 0
-    let column = Int((line as NSString).substring(with: match.range(at: 2))) ?? 0
-    let severityStr = (line as NSString).substring(with: match.range(at: 3))
-    let message = (line as NSString).substring(with: match.range(at: 4))
+    let filename = (line as NSString).substring(with: match.range(at: 1))
+    let lineNum = Int((line as NSString).substring(with: match.range(at: 2))) ?? 0
+    let column = Int((line as NSString).substring(with: match.range(at: 3))) ?? 0
+    let severityStr = (line as NSString).substring(with: match.range(at: 4))
+    let message = (line as NSString).substring(with: match.range(at: 5))
 
     let severity: MetalDiagnosticSeverity
     switch severityStr {
@@ -151,7 +155,28 @@ public class MetalCompiler {
       severity = .information
     }
 
+    // Resolve file URI
+    let fileURI: String
+    if filename.contains("shader.metal") {
+      fileURI = mainFileURI
+    } else {
+      // It's likely an absolute path or relative path
+      if filename.hasPrefix("/") {
+        fileURI = URL(fileURLWithPath: filename).absoluteString
+      } else {
+        // Try to resolve relative to main file directory
+        if let mainURL = URL(string: mainFileURI) {
+            let dir = mainURL.deletingLastPathComponent()
+            fileURI = dir.appendingPathComponent(filename).absoluteString
+        } else {
+             // Fallback
+            fileURI = mainFileURI
+        }
+      }
+    }
+
     return MetalDiagnostic(
+      fileURI: fileURI,
       line: max(0, lineNum - 1),  // Convert to 0-based
       column: max(0, column - 1),  // Convert to 0-based
       severity: severity,
@@ -162,12 +187,14 @@ public class MetalCompiler {
 
 /// Represents a diagnostic from the Metal compiler
 public struct MetalDiagnostic {
+  public let fileURI: String?
   public let line: Int
   public let column: Int
   public let severity: MetalDiagnosticSeverity
   public let message: String
 
-  public init(line: Int, column: Int, severity: MetalDiagnosticSeverity, message: String) {
+  public init(fileURI: String? = nil, line: Int, column: Int, severity: MetalDiagnosticSeverity, message: String) {
+    self.fileURI = fileURI
     self.line = line
     self.column = column
     self.severity = severity

@@ -1,6 +1,6 @@
 # Metal LSP - 新功能总结
 
-## 📋 实现的三个新 LSP 功能
+## 📋 实现的新 LSP 功能
 
 ### ✅ 1. Go to Definition (`textDocument/definition`)
 
@@ -33,6 +33,7 @@ kernel void myKernel(device float* data [[buffer(0)]]) {
 - ✅ 函数定义
 - ✅ 结构体定义
 - ✅ kernel/vertex/fragment 函数
+- ✅ `#include` 头文件跳转
 - ⚠️ 局部变量（有时会找到全局同名变量）
 
 ---
@@ -128,6 +129,20 @@ kernel void test() {
   "trimFinalNewlines": true          // 删除多余末尾换行
 }
 ```
+
+---
+
+### ✅ 4. Semantic Highlighting (`textDocument/semanticTokens/full`)
+
+**目的**: 提供基于语义的代码高亮，区分关键字、类型、函数等
+
+**特点**:
+- ✅ 区分函数、变量、属性、方法
+- ✅ 识别 Metal 关键字和类型
+- ✅ 正确高亮注释和字符串
+- ✅ 识别宏定义
+
+**实现方式**: 正则表达式词法分析器 (Lexer)
 
 ---
 
@@ -343,10 +358,11 @@ swift test
 
 ## 总结
 
-✅ **成功实现了三个新的 LSP 功能：**
-- Go to Definition（变量/函数声明跳转）
+✅ **成功实现了新的 LSP 功能：**
+- Go to Definition（变量/函数声明跳转 + 头文件支持）
 - Find References（符号引用查询）
 - Code Formatting（代码格式化）
+- Semantic Highlighting（语义高亮）
 
 ✨ **技术特点：**
 - 基于正则表达式的轻量级实现

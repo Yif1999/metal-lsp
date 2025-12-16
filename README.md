@@ -12,6 +12,13 @@ A Language Server Protocol (LSP) implementation for Apple's Metal Shading Langua
 ## Features
 
 - **Real-time Diagnostics**: Validates Metal shaders using the official Metal compiler (`xcrun metal`)
+  - Supports error checking in `#include` files
+  - Maps diagnostics back to the correct source file
+- **Semantic Highlighting**: Rich syntax highlighting using LSP semantic tokens
+  - Distinguishes keywords, types, functions, variables, macros, and attributes
+- **Go to Definition**: Jump to variable/function declarations and `#include` headers
+- **Find References**: Locate all usages of a symbol across the file
+- **Code Formatting**: Format Metal code using `clang-format` or built-in fallback
 - **Auto-completion**: Comprehensive completion support for:
   - Built-in types (float4, half3, texture2d, etc.)
   - Math functions (sin, cos, normalize, dot, cross, etc.)
