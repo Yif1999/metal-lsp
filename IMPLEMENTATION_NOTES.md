@@ -1,7 +1,7 @@
 # Metal LSP - 新功能实现说明
 
 ## 概述
-本文档描述了三个新 LSP 功能的实现方式和原理。
+本文档描述了新 LSP 功能的实现方式和原理。
 
 ## 1. Go to Definition (textDocument/definition)
 
@@ -119,6 +119,40 @@ let formatted = formatter.format(
 )
 ```
 
+## 4. Semantic Highlighting (textDocument/semanticTokens/full)
+
+### 工作原理
+使用正则表达式词法分析器 (Lexer) 将源代码分割成 token，并为每个 token 分配类型和修饰符。
+
+### Token 类型
+- 关键字 (keyword): `kernel`, `vertex`, `fragment`, `struct` 等
+- 类型 (type): `float`, `int`, `float4`, `texture2d` 等
+- 函数 (function/method): 后跟 `(` 的标识符
+- 变量 (variable): 普通标识符
+- 宏 (macro): 以 `#` 开头的标识符
+- 注释 (comment): `//` 或 `/* ... */`
+- 字符串 (string): `"..."`
+- 数字 (number): `123`, `1.0f` 等
+
+### 代码示例
+```swift
+// 在 MetalLexer.swift 中
+let tokens = lexer.tokenize(source)
+// Token: { type: "keyword", line: 0, column: 0, length: 6 }
+```
+
+### 编码方式
+LSP 要求将 token 编码为整数数组（相对行、相对列、长度、类型索引、修饰符掩码）。
+
+```swift
+// 编码逻辑
+data.append(lineDelta)
+data.append(charDelta)
+data.append(token.length)
+data.append(typeIndex)
+data.append(modifiers)
+```
+
 ## 技术架构
 
 ### 流程图
@@ -138,7 +172,8 @@ MetalSymbolFinder / MetalFormatter - 处理逻辑
 ```
 Sources/MetalCore/
 ├── MetalSymbolFinder.swift    ← 符号查找逻辑
-├── MetalFormatter.swift        ← 格式化逻辑
+├── MetalFormatter.swift       ← 格式化逻辑
+├── MetalLexer.swift           ← 词法分析器
 └── ...
 
 Sources/MetalLanguageServer/
