@@ -231,6 +231,72 @@ public class LanguageServer {
         let result = try handleDocumentSymbols(params: params)
         try sendResponse(id: request.id, result: result)
 
+      case "textDocument/documentHighlight":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(DocumentHighlightParams.self)
+        let result = try handleDocumentHighlight(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/documentLink":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(DocumentLinkParams.self)
+        let result = try handleDocumentLink(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/foldingRange":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(FoldingRangeParams.self)
+        let result = try handleFoldingRange(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/typeDefinition":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(TypeDefinitionParams.self)
+        let result = try handleTypeDefinition(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/documentColor":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(DocumentColorParams.self)
+        let result = try handleDocumentColor(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/colorPresentation":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        let params = try request.params?.decode(ColorPresentationParams.self)
+        let result = try handleColorPresentation(params: params)
+        try sendResponse(id: request.id, result: result)
+
       default:
         try sendError(
           id: request.id, code: .methodNotFound,
@@ -298,7 +364,12 @@ public class LanguageServer {
         legend: SemanticTokensLegend(tokenTypes: tokenTypes, tokenModifiers: tokenModifiers),
         full: true,
         range: true
-      )
+      ),
+      documentHighlightProvider: true,
+      documentLinkProvider: DocumentLinkOptions(resolveProvider: false),
+      foldingRangeProvider: true,
+      typeDefinitionProvider: true,
+      colorProvider: true
     )
 
     let result = InitializeResult(
@@ -723,6 +794,538 @@ public class LanguageServer {
 
     let symbols = analysis.index.symbols.map { documentSymbol(from: $0) }
     return try JSONValue.from(symbols)
+  }
+
+  private func handleDocumentHighlight(params: DocumentHighlightParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(DocumentHighlightResult())
+    }
+
+    log("Document highlight requested at \(params.position.line):\(params.position.character)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(DocumentHighlightResult())
+    }
+
+    guard let word = extractWordAtPosition(text: document.text, position: params.position) else {
+      return try JSONValue.from(DocumentHighlightResult())
+    }
+
+    log("Highlighting occurrences of: \(word)")
+
+    // Find all occurrences in current document
+    var highlights: [DocumentHighlight] = []
+    let lines = document.text.components(separatedBy: .newlines)
+
+    for (lineIndex, line) in lines.enumerated() {
+      var searchRange = line.startIndex..<line.endIndex
+      while let range = line.range(of: word, options: [], range: searchRange) {
+        let column = line.distance(from: line.startIndex, to: range.lowerBound)
+
+        // Verify word boundaries
+        let beforeIndex = range.lowerBound
+        let afterIndex = range.upperBound
+
+        let beforeChar = beforeIndex > line.startIndex ? line[line.index(before: beforeIndex)] : nil
+        let afterChar = afterIndex < line.endIndex ? line[afterIndex] : nil
+
+        let wordChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
+        let isWordBoundary =
+          (beforeChar == nil || String(beforeChar!).rangeOfCharacter(from: wordChars) == nil) &&
+          (afterChar == nil || String(afterChar!).rangeOfCharacter(from: wordChars) == nil)
+
+        if isWordBoundary {
+          highlights.append(
+            DocumentHighlight(
+              range: Range(
+                start: Position(line: lineIndex, character: column),
+                end: Position(line: lineIndex, character: column + word.count)
+              ),
+              kind: .read
+            )
+          )
+        }
+
+        searchRange = range.upperBound..<line.endIndex
+      }
+    }
+
+    return try JSONValue.from(highlights)
+  }
+
+  private func handleDocumentLink(params: DocumentLinkParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(DocumentLinkResult())
+    }
+
+    log("Document links requested for \(params.textDocument.uri)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(DocumentLinkResult())
+    }
+
+    guard let fileURL = URL(string: document.uri), fileURL.isFileURL else {
+      return try JSONValue.from(DocumentLinkResult())
+    }
+
+    var links: [DocumentLink] = []
+    let lines = document.text.components(separatedBy: .newlines)
+    let baseDir = fileURL.deletingLastPathComponent()
+
+    for (lineIndex, line) in lines.enumerated() {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+      // Match #include "path" or #include <path>
+      if trimmed.hasPrefix("#include") {
+        if let startQuote = trimmed.firstIndex(of: "\""),
+           let endQuote = trimmed[trimmed.index(after: startQuote)...].firstIndex(of: "\"") {
+
+          let startColumn = trimmed.distance(from: trimmed.startIndex, to: startQuote)
+          let endColumn = trimmed.distance(from: trimmed.startIndex, to: endQuote)
+          let includePath = String(trimmed[trimmed.index(after: startQuote)..<endQuote])
+
+          // Resolve relative path
+          let resolvedURL = baseDir.appendingPathComponent(includePath)
+          let targetURI = resolvedURL.absoluteString
+
+          // Check if file exists
+          let fileExists = FileManager.default.fileExists(atPath: resolvedURL.path)
+
+          if fileExists {
+            links.append(
+              DocumentLink(
+                range: Range(
+                  start: Position(line: lineIndex, character: startColumn),
+                  end: Position(line: lineIndex, character: endColumn + 1)
+                ),
+                target: targetURI,
+                tooltip: "Open \(includePath)"
+              )
+            )
+          }
+        } else if let startAngle = trimmed.firstIndex(of: "<"),
+                  let endAngle = trimmed[trimmed.index(after: startAngle)...].firstIndex(of: ">") {
+
+          let startColumn = trimmed.distance(from: trimmed.startIndex, to: startAngle)
+          let endColumn = trimmed.distance(from: trimmed.startIndex, to: endAngle)
+          let includePath = String(trimmed[trimmed.index(after: startAngle)..<endAngle])
+
+          // System includes - still provide link but no target
+          links.append(
+            DocumentLink(
+              range: Range(
+                start: Position(line: lineIndex, character: startColumn),
+                end: Position(line: lineIndex, character: endColumn + 1)
+              ),
+              target: nil,
+              tooltip: "System include: \(includePath)"
+            )
+          )
+        }
+      }
+    }
+
+    return try JSONValue.from(links)
+  }
+
+  private func handleFoldingRange(params: FoldingRangeParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(FoldingRangeResult())
+    }
+
+    log("Folding range requested for \(params.textDocument.uri)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(FoldingRangeResult())
+    }
+
+    guard let analysis = getAnalysis(for: params.textDocument.uri, document: document) else {
+      return try JSONValue.from(FoldingRangeResult())
+    }
+
+    var ranges: [FoldingRange] = []
+
+    // Create folding ranges from document symbols
+    for symbol in analysis.index.symbols {
+      let range = symbol.range
+
+      // Function/struct body folding
+      if symbol.kind == .kernel || symbol.kind == .vertex || symbol.kind == .fragment ||
+         symbol.kind == .function || symbol.kind == .struct {
+
+        // Find the opening brace
+        let startLine = range.start.line
+        let endLine = range.end.line
+
+        if endLine > startLine {
+          ranges.append(
+            FoldingRange(
+              startLine: startLine,
+              endLine: endLine,
+              kind: .region
+            )
+          )
+        }
+      }
+    }
+
+    // Add folding for #include blocks
+    let lines = document.text.components(separatedBy: .newlines)
+    for (lineIndex, line) in lines.enumerated() {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("#include") {
+        // Check if there are multiple includes in a block
+        if lineIndex + 1 < lines.count {
+          var lastInclude = lineIndex
+          for nextLine in (lineIndex + 1)..<lines.count {
+            let nextTrimmed = lines[nextLine].trimmingCharacters(in: .whitespaces)
+            if nextTrimmed.hasPrefix("#include") {
+              lastInclude = nextLine
+            } else if !nextTrimmed.isEmpty {
+              break
+            }
+          }
+
+          if lastInclude > lineIndex {
+            ranges.append(
+              FoldingRange(
+                startLine: lineIndex,
+                endLine: lastInclude,
+                kind: .imports
+              )
+            )
+          }
+        }
+      }
+    }
+
+    // Add folding for comments
+    var inComment = false
+    var commentStart = 0
+
+    for (lineIndex, line) in lines.enumerated() {
+      if line.contains("/*") && !inComment {
+        inComment = true
+        commentStart = lineIndex
+      }
+
+      if line.contains("*/") && inComment {
+        ranges.append(
+          FoldingRange(
+            startLine: commentStart,
+            endLine: lineIndex,
+            kind: .comment
+          )
+        )
+        inComment = false
+      }
+    }
+
+    return try JSONValue.from(ranges)
+  }
+
+  private func handleTypeDefinition(params: TypeDefinitionParams?) throws -> JSONValue {
+    guard let params = params else {
+      return JSONValue.null
+    }
+
+    log("Type definition requested at \(params.position.line):\(params.position.character)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return JSONValue.null
+    }
+
+    guard let word = extractWordAtPosition(text: document.text, position: params.position) else {
+      return JSONValue.null
+    }
+
+    log("Looking for type definition of: \(word)")
+
+    // Find struct declarations
+    if let location = findStructDefinition(name: word, primaryURI: params.textDocument.uri, primarySource: document.text) {
+      return try JSONValue.from(location)
+    }
+
+    return JSONValue.null
+  }
+
+  private func findStructDefinition(name: String, primaryURI: String, primarySource: String) -> Location? {
+    // Check primary document first
+    let primaryDeclarations = symbolFinder.findDeclarations(name: name, in: primarySource)
+    let structDecl = primaryDeclarations.first { $0.kind == .struct }
+
+    if let decl = structDecl {
+      return Location(
+        uri: primaryURI,
+        range: Range(
+          start: Position(line: decl.line, character: decl.column),
+          end: Position(line: decl.line, character: decl.column + decl.name.count)
+        )
+      )
+    }
+
+    // Search workspace
+    for uri in workspaceCandidateURIs() {
+      if uri == primaryURI { continue }
+
+      guard let source = loadWorkspaceSource(uri: uri) else { continue }
+
+      let declarations = symbolFinder.findDeclarations(name: name, in: source)
+      let workspaceStructDecl = declarations.first { $0.kind == .struct }
+
+      if let decl = workspaceStructDecl {
+        return Location(
+          uri: uri,
+          range: Range(
+            start: Position(line: decl.line, character: decl.column),
+            end: Position(line: decl.line, character: decl.column + decl.name.count)
+          )
+        )
+      }
+    }
+
+    return nil
+  }
+
+  // MARK: - Document Color Handlers
+
+  private func handleDocumentColor(params: DocumentColorParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(DocumentColorResult())
+    }
+
+    log("Document color requested for \(params.textDocument.uri)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(DocumentColorResult())
+    }
+
+    let colors = findColors(in: document.text)
+    return try JSONValue.from(colors)
+  }
+
+  private func handleColorPresentation(params: ColorPresentationParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(ColorPresentationResult())
+    }
+
+    log("Color presentation requested")
+
+    // Generate label from color
+    let color = params.color
+    let label = String(format: "rgba(%.0f, %.0f, %.0f, %.2f)",
+      color.red * 255, color.green * 255, color.blue * 255, color.alpha)
+
+    let presentation = ColorPresentation(label: label)
+    return try JSONValue.from([presentation])
+  }
+
+  private func findColors(in text: String) -> [ColorInformation] {
+    var colors: [ColorInformation] = []
+    let lines = text.components(separatedBy: .newlines)
+
+    for (lineIndex, line) in lines.enumerated() {
+      // Pattern 1: float4(r, g, b, a) or float3(r, g, b)
+      // Pattern 2: float4 { r, g, b, a }
+      // Pattern 3: hex colors (0xRRGGBB or 0xRRGGBBAA)
+      // Pattern 4: rgba(r, g, b, a) or rgb(r, g, b)
+
+      colors.append(contentsOf: findFloat4Colors(line: line, lineIndex: lineIndex))
+      colors.append(contentsOf: findFloat3Colors(line: line, lineIndex: lineIndex))
+      colors.append(contentsOf: findHexColors(line: line, lineIndex: lineIndex))
+      colors.append(contentsOf: findRgbaColors(line: line, lineIndex: lineIndex))
+    }
+
+    return colors
+  }
+
+  private func findFloat4Colors(line: String, lineIndex: Int) -> [ColorInformation] {
+    // Match: float4(r, g, b, a) or float4 { r, g, b, a }
+    var colors: [ColorInformation] = []
+
+    // Pattern: float4(0.5, 0.5, 0.5, 1.0)
+    let float4Pattern = #/float4\s*\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)/#
+
+    for match in line.matches(of: float4Pattern) {
+      let r = Double(match.output.1) ?? 0
+      let g = Double(match.output.2) ?? 0
+      let b = Double(match.output.3) ?? 0
+      let a = Double(match.output.4) ?? 1
+
+      let startCol = line.distance(from: line.startIndex, to: match.range.lowerBound)
+      let endCol = line.distance(from: line.startIndex, to: match.range.upperBound)
+
+      colors.append(
+        ColorInformation(
+          range: Range(
+            start: Position(line: lineIndex, character: startCol),
+            end: Position(line: lineIndex, character: endCol)
+          ),
+          color: Color(red: r, green: g, blue: b, alpha: a)
+        )
+      )
+    }
+
+    // Pattern: float4 { 0.5, 0.5, 0.5, 1.0 }
+    let float4BracePattern = #/float4\s*\{\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\}/#
+
+    for match in line.matches(of: float4BracePattern) {
+      let r = Double(match.output.1) ?? 0
+      let g = Double(match.output.2) ?? 0
+      let b = Double(match.output.3) ?? 0
+      let a = Double(match.output.4) ?? 1
+
+      let startCol = line.distance(from: line.startIndex, to: match.range.lowerBound)
+      let endCol = line.distance(from: line.startIndex, to: match.range.upperBound)
+
+      colors.append(
+        ColorInformation(
+          range: Range(
+            start: Position(line: lineIndex, character: startCol),
+            end: Position(line: lineIndex, character: endCol)
+          ),
+          color: Color(red: r, green: g, blue: b, alpha: a)
+        )
+      )
+    }
+
+    return colors
+  }
+
+  private func findFloat3Colors(line: String, lineIndex: Int) -> [ColorInformation] {
+    // Match: float3(r, g, b) or float3 { r, g, b }
+    var colors: [ColorInformation] = []
+
+    // Pattern: float3(0.5, 0.5, 0.5)
+    let float3Pattern = #/float3\s*\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)/#
+
+    for match in line.matches(of: float3Pattern) {
+      let r = Double(match.output.1) ?? 0
+      let g = Double(match.output.2) ?? 0
+      let b = Double(match.output.3) ?? 0
+
+      let startCol = line.distance(from: line.startIndex, to: match.range.lowerBound)
+      let endCol = line.distance(from: line.startIndex, to: match.range.upperBound)
+
+      colors.append(
+        ColorInformation(
+          range: Range(
+            start: Position(line: lineIndex, character: startCol),
+            end: Position(line: lineIndex, character: endCol)
+          ),
+          color: Color(red: r, green: g, blue: b, alpha: 1.0)
+        )
+      )
+    }
+
+    // Pattern: float3 { 0.5, 0.5, 0.5 }
+    let float3BracePattern = #/float3\s*\{\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\}/#
+
+    for match in line.matches(of: float3BracePattern) {
+      let r = Double(match.output.1) ?? 0
+      let g = Double(match.output.2) ?? 0
+      let b = Double(match.output.3) ?? 0
+
+      let startCol = line.distance(from: line.startIndex, to: match.range.lowerBound)
+      let endCol = line.distance(from: line.startIndex, to: match.range.upperBound)
+
+      colors.append(
+        ColorInformation(
+          range: Range(
+            start: Position(line: lineIndex, character: startCol),
+            end: Position(line: lineIndex, character: endCol)
+          ),
+          color: Color(red: r, green: g, blue: b, alpha: 1.0)
+        )
+      )
+    }
+
+    return colors
+  }
+
+  private func findHexColors(line: String, lineIndex: Int) -> [ColorInformation] {
+    // Match: 0xRRGGBB or 0xRRGGBBAA
+    var colors: [ColorInformation] = []
+
+    let hexPattern = #/0x([0-9a-fA-F]{6})([0-9a-fA-F]{2})?/#
+
+    for match in line.matches(of: hexPattern) {
+      let hexRGB = String(match.output.1)
+      let hexAlpha = match.output.2.map(String.init) ?? "FF"
+
+      // Parse RGB
+      let r = Double(Int(hexRGB.prefix(2), radix: 16)!) / 255.0
+      let g = Double(Int(hexRGB.dropFirst(2).prefix(2), radix: 16)!) / 255.0
+      let b = Double(Int(hexRGB.suffix(2), radix: 16)!) / 255.0
+      let a = Double(Int(hexAlpha, radix: 16)!) / 255.0
+
+      let startCol = line.distance(from: line.startIndex, to: match.range.lowerBound)
+      let endCol = line.distance(from: line.startIndex, to: match.range.upperBound)
+
+      colors.append(
+        ColorInformation(
+          range: Range(
+            start: Position(line: lineIndex, character: startCol),
+            end: Position(line: lineIndex, character: endCol)
+          ),
+          color: Color(red: r, green: g, blue: b, alpha: a)
+        )
+      )
+    }
+
+    return colors
+  }
+
+  private func findRgbaColors(line: String, lineIndex: Int) -> [ColorInformation] {
+    // Match: rgba(r, g, b, a) or rgb(r, g, b)
+    var colors: [ColorInformation] = []
+
+    // rgba pattern
+    let rgbaPattern = #/rgba\s*\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)/#
+
+    for match in line.matches(of: rgbaPattern) {
+      let r = (Double(match.output.1) ?? 0) / 255.0
+      let g = (Double(match.output.2) ?? 0) / 255.0
+      let b = (Double(match.output.3) ?? 0) / 255.0
+      let a = Double(match.output.4) ?? 1
+
+      let startCol = line.distance(from: line.startIndex, to: match.range.lowerBound)
+      let endCol = line.distance(from: line.startIndex, to: match.range.upperBound)
+
+      colors.append(
+        ColorInformation(
+          range: Range(
+            start: Position(line: lineIndex, character: startCol),
+            end: Position(line: lineIndex, character: endCol)
+          ),
+          color: Color(red: r, green: g, blue: b, alpha: a)
+        )
+      )
+    }
+
+    // rgb pattern
+    let rgbPattern = #/rgb\s*\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)/#
+
+    for match in line.matches(of: rgbPattern) {
+      let r = (Double(match.output.1) ?? 0) / 255.0
+      let g = (Double(match.output.2) ?? 0) / 255.0
+      let b = (Double(match.output.3) ?? 0) / 255.0
+
+      let startCol = line.distance(from: line.startIndex, to: match.range.lowerBound)
+      let endCol = line.distance(from: line.startIndex, to: match.range.upperBound)
+
+      colors.append(
+        ColorInformation(
+          range: Range(
+            start: Position(line: lineIndex, character: startCol),
+            end: Position(line: lineIndex, character: endCol)
+          ),
+          color: Color(red: r, green: g, blue: b, alpha: 1.0)
+        )
+      )
+    }
+
+    return colors
   }
 
   private func encodeTokens(_ tokens: [MetalToken]) -> [Int] {
@@ -1547,6 +2150,12 @@ public class LanguageServer {
     let paramsJSON = try JSONValue.from(params)
     let notification = JSONRPCNotification(method: method, params: paramsJSON)
     try transport.writeJSON(notification)
+  }
+
+  private func sendProgressNotification(token: String, kind: String? = nil, title: String? = nil, percentage: Int? = nil, message: String? = nil) throws {
+    let value = ProgressValue(kind: kind, title: title, percentage: percentage, message: message)
+    let params = ProgressParams(token: token, value: value)
+    try sendNotification(method: "$/progress", params: params)
   }
 
   private func log(_ message: String) {

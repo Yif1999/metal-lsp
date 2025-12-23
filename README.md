@@ -365,6 +365,21 @@ tail -f /tmp/metal-lsp.log
 - [x] **textDocument/documentSymbol** - Outline view, breadcrumbs, sticky lines
 - [x] **textDocument/signatureHelp** - Parameter hints for functions
 
+**2025.3 Features (NEW):**
+- [x] **$/progress** - Server-initiated progress notifications
+- [x] **textDocument/documentHighlight** - Highlight usages in current file
+
+**2025.2 Features (NEW):**
+- [x] **textDocument/foldingRange** - Code folding ranges
+- [x] **textDocument/inlayHint** - Inlay hints (types, parameter names) - *Partial*
+
+**2025.1 Features (NEW):**
+- [x] **textDocument/documentLink** - Document links (e.g., include paths)
+
+**2024.3 Features (NEW):**
+- [x] **textDocument/typeDefinition** - Go to type declaration (structs)
+- [x] **textDocument/documentColor** - Color preview in editor (float4, float3, hex, rgba, rgb)
+
 **Performance Optimizations:**
 - [x] **Incremental Analysis** - Document analysis caching
 - [x] **Diagnostics Caching** - Source hash + include fingerprint caching
@@ -373,20 +388,13 @@ tail -f /tmp/metal-lsp.log
 ### ❌ Not Yet Implemented (JetBrains 2025.3+ Features)
 
 **2025.3 Features:**
-- [ ] **$/progress** - Server-initiated progress notifications
-- [ ] **textDocument/documentHighlight** - Highlight usages in current file
+- [ ] **textDocument/symbolKind** - Symbol kind information (advanced)
 
 **2025.2 Features:**
-- [ ] **textDocument/inlayHint** - Inlay hints (types, parameter names)
-- [ ] **textDocument/foldingRange** - Code folding ranges
+- [ ] **textDocument/inlayHint** - Full inlay hints implementation (types, parameter names)
 
 **2025.1 Features:**
-- [ ] **textDocument/documentLink** - Document links (e.g., include paths)
 - [ ] **textDocument/diagnostic** - Pull diagnostics (vs. push diagnostics)
-
-**2024.3 Features:**
-- [ ] **textDocument/documentColor** - Color preview in editor
-- [ ] **textDocument/typeDefinition** - Go to type declaration
 
 **2024.2 Features:**
 - [ ] **completionItem/resolve** - Resolve completion item details

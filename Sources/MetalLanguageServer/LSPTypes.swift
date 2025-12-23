@@ -365,6 +365,11 @@ struct ServerCapabilities: Codable {
   let documentSymbolProvider: Bool?
   let signatureHelpProvider: SignatureHelpOptions?
   let semanticTokensProvider: SemanticTokensOptions?
+  let documentHighlightProvider: Bool?
+  let documentLinkProvider: DocumentLinkOptions?
+  let foldingRangeProvider: Bool?
+  let typeDefinitionProvider: Bool?
+  let colorProvider: Bool?
 
   init(
     textDocumentSync: TextDocumentSyncOptions,
@@ -375,7 +380,12 @@ struct ServerCapabilities: Codable {
     documentFormattingProvider: Bool = true,
     documentSymbolProvider: Bool = true,
     signatureHelpProvider: SignatureHelpOptions? = nil,
-    semanticTokensProvider: SemanticTokensOptions? = nil
+    semanticTokensProvider: SemanticTokensOptions? = nil,
+    documentHighlightProvider: Bool = true,
+    documentLinkProvider: DocumentLinkOptions? = nil,
+    foldingRangeProvider: Bool = true,
+    typeDefinitionProvider: Bool = true,
+    colorProvider: Bool = true
   ) {
     self.textDocumentSync = textDocumentSync
     self.completionProvider = completionProvider
@@ -386,6 +396,19 @@ struct ServerCapabilities: Codable {
     self.documentSymbolProvider = documentSymbolProvider
     self.signatureHelpProvider = signatureHelpProvider
     self.semanticTokensProvider = semanticTokensProvider
+    self.documentHighlightProvider = documentHighlightProvider
+    self.documentLinkProvider = documentLinkProvider
+    self.foldingRangeProvider = foldingRangeProvider
+    self.typeDefinitionProvider = typeDefinitionProvider
+    self.colorProvider = colorProvider
+  }
+}
+
+struct DocumentLinkOptions: Codable {
+  let resolveProvider: Bool?
+
+  init(resolveProvider: Bool? = nil) {
+    self.resolveProvider = resolveProvider
   }
 }
 
@@ -393,7 +416,7 @@ struct SemanticTokensOptions: Codable {
   let legend: SemanticTokensLegend
   let full: SemanticTokensFullOptions?
   let range: Bool?
-  let delta: Bool?  // Top-level delta support for some clients
+  let delta: Bool?
 
   init(legend: SemanticTokensLegend, full: Bool = true, range: Bool? = nil) {
     self.legend = legend
@@ -404,7 +427,7 @@ struct SemanticTokensOptions: Codable {
 }
 
 struct SemanticTokensFullOptions: Codable {
-  let delta: Bool?  // Support delta updates
+  let delta: Bool?
 
   init(delta: Bool? = nil) {
     self.delta = delta
@@ -431,7 +454,7 @@ struct SemanticTokens: Codable {
 
 struct TextDocumentSyncOptions: Codable {
   let openClose: Bool
-  let change: Int  // TextDocumentSyncKind
+  let change: Int
   let save: SaveOptions?
 
   init(openClose: Bool = true, change: Int = 1) {
@@ -484,3 +507,140 @@ struct DidSaveTextDocumentParams: Codable {
   let textDocument: TextDocumentIdentifier
   let text: String?
 }
+
+// MARK: - Document Highlight Types
+
+enum DocumentHighlightKind: Int, Codable {
+  case text = 1
+  case read = 2
+  case write = 3
+}
+
+struct DocumentHighlight: Codable {
+  let range: Range
+  let kind: DocumentHighlightKind?
+
+  init(range: Range, kind: DocumentHighlightKind? = nil) {
+    self.range = range
+    self.kind = kind
+  }
+}
+
+typealias DocumentHighlightParams = TextDocumentPositionParams
+typealias DocumentHighlightResult = [DocumentHighlight]
+
+// MARK: - Document Link Types
+
+struct DocumentLink: Codable {
+  let range: Range
+  let target: String?
+  let tooltip: String?
+
+  init(range: Range, target: String? = nil, tooltip: String? = nil) {
+    self.range = range
+    self.target = target
+    self.tooltip = tooltip
+  }
+}
+
+struct DocumentLinkParams: Codable {
+  let textDocument: TextDocumentIdentifier
+}
+
+typealias DocumentLinkResult = [DocumentLink]
+
+// MARK: - Folding Range Types
+
+enum FoldingRangeKind: String, Codable {
+  case comment = "comment"
+  case imports = "imports"
+  case region = "region"
+}
+
+struct FoldingRange: Codable {
+  let startLine: Int
+  let endLine: Int
+  let startCharacter: Int?
+  let endCharacter: Int?
+  let kind: FoldingRangeKind?
+
+  init(startLine: Int, endLine: Int, startCharacter: Int? = nil, endCharacter: Int? = nil, kind: FoldingRangeKind? = nil) {
+    self.startLine = startLine
+    self.endLine = endLine
+    self.startCharacter = startCharacter
+    self.endCharacter = endCharacter
+    self.kind = kind
+  }
+}
+
+struct FoldingRangeParams: Codable {
+  let textDocument: TextDocumentIdentifier
+}
+
+typealias FoldingRangeResult = [FoldingRange]
+
+// MARK: - Progress Types (Server-initiated)
+
+struct ProgressParams<T: Codable>: Codable {
+  let token: String
+  let value: T
+}
+
+struct ProgressValue: Codable {
+  let kind: String?
+  let title: String?
+  let percentage: Int?
+  let message: String?
+}
+
+// MARK: - Type Definition Types
+
+typealias TypeDefinitionParams = TextDocumentPositionParams
+typealias TypeDefinitionResult = Location
+
+// MARK: - Document Color Types
+
+struct Color: Codable {
+  let red: Double
+  let green: Double
+  let blue: Double
+  let alpha: Double
+
+  init(red: Double, green: Double, blue: Double, alpha: Double = 1.0) {
+    self.red = red
+    self.green = green
+    self.blue = blue
+    self.alpha = alpha
+  }
+}
+
+struct ColorInformation: Codable {
+  let range: Range
+  let color: Color
+}
+
+struct DocumentColorParams: Codable {
+  let textDocument: TextDocumentIdentifier
+}
+
+typealias DocumentColorResult = [ColorInformation]
+
+struct ColorPresentationParams: Codable {
+  let textDocument: TextDocumentIdentifier
+  let color: Color
+  let range: Range
+}
+
+struct ColorPresentation: Codable {
+  let label: String
+  let textEdit: TextEdit?
+  let additionalTextEdits: [TextEdit]?
+
+  init(label: String, textEdit: TextEdit? = nil, additionalTextEdits: [TextEdit]? = nil) {
+    self.label = label
+    self.textEdit = textEdit
+    self.additionalTextEdits = additionalTextEdits
+  }
+}
+
+typealias ColorPresentationResult = [ColorPresentation]
