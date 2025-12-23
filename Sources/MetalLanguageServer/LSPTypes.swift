@@ -391,7 +391,24 @@ struct ServerCapabilities: Codable {
 
 struct SemanticTokensOptions: Codable {
   let legend: SemanticTokensLegend
-  let full: Bool
+  let full: SemanticTokensFullOptions?
+  let range: Bool?
+  let delta: Bool?  // Top-level delta support for some clients
+
+  init(legend: SemanticTokensLegend, full: Bool = true, range: Bool? = nil) {
+    self.legend = legend
+    self.full = full ? SemanticTokensFullOptions(delta: true) : nil
+    self.range = range
+    self.delta = true
+  }
+}
+
+struct SemanticTokensFullOptions: Codable {
+  let delta: Bool?  // Support delta updates
+
+  init(delta: Bool? = nil) {
+    self.delta = delta
+  }
 }
 
 struct SemanticTokensLegend: Codable {
@@ -401,6 +418,11 @@ struct SemanticTokensLegend: Codable {
 
 struct SemanticTokensParams: Codable {
   let textDocument: TextDocumentIdentifier
+}
+
+struct SemanticTokensRangeParams: Codable {
+  let textDocument: TextDocumentIdentifier
+  let range: Range
 }
 
 struct SemanticTokens: Codable {

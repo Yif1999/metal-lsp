@@ -177,6 +177,38 @@ public class LanguageServer {
         let result = try handleSemanticTokens(params: params)
         try sendResponse(id: request.id, result: result)
 
+      case "textDocument/semanticTokens/full/delta":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        // For now, return full tokens (delta not implemented yet)
+        // JetBrains may request this but will handle full response
+        let params = try request.params?.decode(SemanticTokensParams.self)
+        let result = try handleSemanticTokens(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "textDocument/semanticTokens/range":
+        guard isInitialized else {
+          try sendError(
+            id: request.id, code: .serverNotInitialized,
+            message: "Server not initialized")
+          return
+        }
+        // Range-based semantic tokens - return tokens within the requested range
+        let params = try request.params?.decode(SemanticTokensRangeParams.self)
+        let result = try handleSemanticTokensRange(params: params)
+        try sendResponse(id: request.id, result: result)
+
+      case "workspace/semanticTokens/refresh":
+        // Server-initiated refresh notification (no response needed)
+        log("Semantic tokens refresh requested by client")
+        // Could trigger re-tokenization here if needed
+        // For now, just acknowledge with empty response
+        try sendResponse(id: request.id, result: JSONValue.null)
+
       case "textDocument/signatureHelp":
         guard isInitialized else {
           try sendError(
@@ -264,7 +296,8 @@ public class LanguageServer {
       signatureHelpProvider: SignatureHelpOptions(triggerCharacters: ["(", ","]),
       semanticTokensProvider: SemanticTokensOptions(
         legend: SemanticTokensLegend(tokenTypes: tokenTypes, tokenModifiers: tokenModifiers),
-        full: true
+        full: true,
+        range: true
       )
     )
 
@@ -566,9 +599,54 @@ public class LanguageServer {
     }
 
     let tokens = lexer.tokenize(document.text)
+
+    // Debug: Log first few tokens
+    if verbose && !tokens.isEmpty {
+      let preview = tokens.prefix(10).map { "\($0.type)@[\($0.line):\($0.column)]" }.joined(separator: ", ")
+      log("Token preview: \(preview)")
+    }
+
     let encodedData = encodeTokens(tokens)
 
-    log("Returning \(encodedData.count / 5) tokens")
+    log("Returning \(encodedData.count / 5) tokens, data length: \(encodedData.count)")
+
+    return try JSONValue.from(SemanticTokens(data: encodedData))
+  }
+
+  private func handleSemanticTokensRange(params: SemanticTokensRangeParams?) throws -> JSONValue {
+    guard let params = params else {
+      return try JSONValue.from(SemanticTokens(data: []))
+    }
+
+    log("Semantic tokens range requested for \(params.textDocument.uri) at \(params.range)")
+
+    guard let document = documentManager.getDocument(uri: params.textDocument.uri) else {
+      return try JSONValue.from(SemanticTokens(data: []))
+    }
+
+    let allTokens = lexer.tokenize(document.text)
+
+    // Filter tokens within the requested range
+    let filteredTokens = allTokens.filter { token in
+      // Check if token overlaps with the requested range
+      if token.line < params.range.start.line {
+        return false
+      }
+      if token.line > params.range.end.line {
+        return false
+      }
+      if token.line == params.range.start.line && token.column < params.range.start.character {
+        return false
+      }
+      if token.line == params.range.end.line && token.column + token.length > params.range.end.character {
+        return false
+      }
+      return true
+    }
+
+    let encodedData = encodeTokens(filteredTokens)
+
+    log("Returning \(filteredTokens.count) tokens in range, data length: \(encodedData.count)")
 
     return try JSONValue.from(SemanticTokens(data: encodedData))
   }
